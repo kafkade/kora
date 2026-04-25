@@ -1263,25 +1263,39 @@ Research: Phase 9 (requires PoC gates) --> Phase 10 (requires Phase 9 success)
 
 ---
 
-## SECTION 18: NAMING & BRANDING (OPTIONAL)
+## SECTION 18: NAMING & BRANDING
 
-**Top candidates** (all `[Validation Required]` -- check crates.io, GitHub, domains):
+### Chosen Name: **kora**
 
-| Name | Strengths | Weaknesses |
-|------|-----------|------------|
-| **kora** | Short (4 chars), musical (West African string instrument), distinctive, easy to type | May conflict with existing projects |
-| **cadence** | Musical term (rhythm), elegant, 7 chars | May conflict with Linux Cadence audio tool |
-| **riff** | Musical (guitar riff), short (4 chars), punchy | Very common word, likely conflicts |
-| **forte** | Musical (loud), short (5 chars), strong feel | May conflict |
-| **resonance** | Descriptive, audio-themed, professional | Long to type (9 chars) |
-| **wavelet** | Audio/DSP reference, technical, short-ish | Niche/academic feel |
-| **rustamp** | Clear Rust + Winamp heritage | A bit literal |
-| **oxide** | Rust-themed (iron oxide), short | Overused in Rust ecosystem |
+The [kora](https://en.wikipedia.org/wiki/Kora_(instrument)) is a 21-string West African harp — one of the most beautiful and versatile acoustic instruments in the world. Built from a calabash gourd, a hardwood neck, and cowhide, it produces a sound often compared to a harp or a flamenco guitar: rich, resonant, and unmistakable.
 
-**Recommendation**: **kora** -- Short, distinctive, musical, easy to type, unlikely to conflict.
-`kora play ~/Music/`, `kora status --json`, `kora --theme Nord`.
+**Why this name fits the project:**
 
-**Runner-ups**: **cadence** (if no Linux conflict), **riff** (if crate available).
+| Quality | The Instrument | The Player |
+|---------|---------------|------------|
+| **Craftsmanship** | Handmade by artisans, each one unique | Hand-tuned audio pipeline, no shortcuts |
+| **Versatility** | Covers melody, bass, and rhythm simultaneously | Handles local files, radio, and podcasts in one tool |
+| **Tradition meets modernity** | Ancient instrument thriving in modern music | Modern Rust architecture for the timeless act of listening |
+| **Simplicity** | Elegant in form despite 21 strings | Four characters, easy to type in a terminal |
+
+**Practical evaluation:**
+
+- crates.io: available `[Validated]`
+- GitHub: `kafkade/kora` `[Validated]`
+- Short and terminal-friendly: `kora play ~/Music/`, `kora status --json`, `kora --theme Nord`
+- Pronounceable in all major languages
+- Distinctive — unlikely to be confused with other tools
+
+**Candidates considered and rejected:**
+
+| Name | Reason Rejected |
+|------|----------------|
+| cadence | Conflicts with Linux Cadence audio tool |
+| riff | Very common word, likely namespace conflicts |
+| forte | Generic, common word |
+| resonance | Too long to type (9 chars) |
+| oxide | Overused in Rust ecosystem |
+| rustamp | Too literal, derivative |
 
 ---
 
