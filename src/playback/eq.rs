@@ -226,7 +226,7 @@ mod tests {
             assert!(!preset.name.is_empty());
             for &gain in &preset.gains {
                 assert!(
-                    gain >= -12.0 && gain <= 12.0,
+                    (-12.0..=12.0).contains(&gain),
                     "Preset '{}' has out-of-range gain: {gain}",
                     preset.name
                 );

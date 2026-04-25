@@ -38,14 +38,19 @@ Prepare a branch for pull request: generate a PR description from the diff AND u
    - Read `CHANGELOG.md` and note the existing `## [Unreleased]` section contents.
    - Understand the Keep a Changelog format used (Added, Changed, Deprecated, Removed, Fixed, Security).
 
-### Phase 2: Run quality checks
+### Phase 2: Fix and verify quality
 
-1. **Verify the branch passes checks** (for the PR checklist)
-   Run the standard Rust checks:
-   - `cargo fmt -- --check`
-   - `cargo clippy -- -D warnings`
-   - `cargo test`
-   - Note which checks pass/fail to fill in the checklist accurately.
+1. **Fix formatting and lint issues first** — do not just report them.
+   Run these in order, fixing any issues before proceeding:
+
+   - Run `cargo fmt` (not `--check` — actually apply formatting fixes)
+   - Run `cargo clippy -- -D warnings`. If there are errors:
+     - Fix each clippy error in the source code
+     - Re-run until clippy passes cleanly
+   - Run `cargo test` to verify nothing is broken
+
+   **Only proceed to Phase 3 when all three pass.** Do not generate a PR
+   description with failing checks — fix the code first.
 
 ### Phase 3: Generate the PR description
 
@@ -57,7 +62,9 @@ Prepare a branch for pull request: generate a PR description from the diff AND u
    - **Related Issues**: Check commit messages for issue references (#123). If none, leave placeholder.
    - **Type of Change**: Check the appropriate box(es) based on diff content.
    - **Module**: Note which modules were touched (`playback/`, `tui/`, `providers/`, etc.)
-   - **Checklist**: Mark items based on the results from the quality checks step.
+   - **Checklist**: Since Phase 2 fixes all issues before reaching here, all quality
+     checklist items (`cargo test`, `cargo clippy`, `cargo fmt`) should be marked as passing.
+     Only mark an item as failing if it genuinely cannot be fixed.
 
 2. **Quality guidelines for the PR description**
    - Do NOT reference internal planning documents (roadmap phases, ADR numbers) — describe actual changes
