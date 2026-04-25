@@ -21,7 +21,7 @@ rtrb = "0.3"
 
 # TUI
 ratatui = "0.30"
-crossterm = "0.28"
+crossterm = "0.29"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
