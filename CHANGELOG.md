@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 10-band graphic equalizer with 11 presets (Flat, Rock, Pop, Jazz, Classical, Electronic, Hip Hop, Acoustic, Bass Boost, Treble Boost, Vocal)
 - `--eq-preset` CLI flag and `--list-eq-presets` to show available presets
 - Low-shelf filter at 31Hz and high-shelf at highest band for natural EQ response
+- Live volume adjustment: +/- keys take effect on currently playing audio immediately
+- Session persistence: auto-save on quit and every 30 seconds, restore on next launch (starts paused)
+- `--no-restore` CLI flag to skip session restore and start fresh
 
 ### Fixed
 

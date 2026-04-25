@@ -33,6 +33,14 @@ impl Track {
         }
     }
 
+    /// Return the source path or URL as a string (for session persistence).
+    pub fn path_string(&self) -> String {
+        match &self.source {
+            TrackSource::File(p) => p.to_string_lossy().into_owned(),
+            TrackSource::Url(url) => url.clone(),
+        }
+    }
+
     pub fn display_name(&self) -> String {
         if let Some(ref meta) = self.metadata {
             if let (Some(artist), Some(title)) = (&meta.artist, &meta.title) {

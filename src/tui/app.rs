@@ -1,7 +1,7 @@
 //! TUI application — ratatui event loop, rendering, and input handling.
 
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::ExecutableCommand;
@@ -13,14 +13,37 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::core::session::Session;
 use crate::playback::player::{PlaybackState, Player, PlayerAction, PlayerCommand};
 
 /// Run the TUI application.
-pub fn run(mut player: Player) -> Result<()> {
-    // Load and start playing the first track
+pub fn run(mut player: Player, no_restore: bool) -> Result<()> {
+    // Session restore
+    let mut restored = false;
+    if !no_restore {
+        let session_path = Session::session_path();
+        match Session::load(&session_path) {
+            Ok(session) if session.track_path.is_some() => {
+                let found = player.restore_session(&session);
+                if found {
+                    tracing::info!("Session restored");
+                    restored = true;
+                }
+            }
+            Ok(_) => {} // empty/default session
+            Err(e) => tracing::warn!("Failed to load session: {e}"),
+        }
+    }
+
+    // Load and start playing the current track
     player.play_current()?;
     let mut playback_handle = player.start_playback();
     player.mark_playback_started();
+
+    // If we restored a session, start paused so the user can resume manually
+    if restored {
+        let _ = player.handle_command(PlayerCommand::PlayPause);
+    }
 
     // Enter alternate screen
     io::stdout().execute(EnterAlternateScreen)?;
@@ -42,6 +65,8 @@ fn run_loop(
     playback_handle: &mut Option<std::thread::JoinHandle<Result<()>>>,
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
+    let save_interval = Duration::from_secs(30);
+    let mut last_save = Instant::now();
 
     loop {
         // Draw
@@ -56,6 +81,14 @@ fn run_loop(
             }
             let action = player.on_track_finished();
             handle_action(action, player, playback_handle)?;
+        }
+
+        // Auto-save session every 30 seconds
+        if last_save.elapsed() >= save_interval {
+            if let Err(e) = player.save_session() {
+                tracing::warn!("Failed to auto-save session: {e}");
+            }
+            last_save = Instant::now();
         }
 
         // Poll for keyboard input
@@ -82,6 +115,10 @@ fn run_loop(
             if let Some(cmd) = cmd {
                 let action = player.handle_command(cmd);
                 if matches!(action, PlayerAction::Quit) {
+                    // Save session before quitting
+                    if let Err(e) = player.save_session() {
+                        tracing::warn!("Failed to save session on quit: {e}");
+                    }
                     return Ok(());
                 }
                 handle_action(action, player, playback_handle)?;

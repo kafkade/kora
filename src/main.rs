@@ -41,6 +41,10 @@ struct Cli {
     /// List available EQ presets and exit
     #[arg(long)]
     list_eq_presets: bool,
+
+    /// Skip session restore (start fresh)
+    #[arg(long)]
+    no_restore: bool,
 }
 
 fn main() -> Result<()> {
@@ -80,7 +84,7 @@ fn main() -> Result<()> {
 
     // Launch TUI player
     let player = playback::player::Player::new(tracks, cli.volume, cli.eq_preset.as_deref())?;
-    tui::app::run(player)?;
+    tui::app::run(player, cli.no_restore)?;
 
     Ok(())
 }
