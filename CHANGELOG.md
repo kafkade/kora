@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live volume adjustment: +/- keys take effect on currently playing audio immediately
 - Session persistence: auto-save on quit and every 30 seconds, restore on next launch (starts paused)
 - `--no-restore` CLI flag to skip session restore and start fresh
+- Configuration file: `config.toml` with defaults for volume, music directory, theme, EQ preset, and buffer size
+- `config.toml.example` shipped in repo with all options documented
+- CLI flags override config values for the session
+- Nord color theme with distinct colors for playback state, playlist, progress bar, and help bar
 
 ### Fixed
 

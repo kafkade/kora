@@ -8,11 +8,11 @@ use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use super::theme::Theme;
 use crate::core::session::Session;
 use crate::playback::player::{PlaybackState, Player, PlayerAction, PlayerCommand};
 
@@ -49,8 +49,9 @@ pub fn run(mut player: Player, no_restore: bool) -> Result<()> {
     io::stdout().execute(EnterAlternateScreen)?;
     terminal::enable_raw_mode()?;
 
+    let theme = Theme::default_theme();
     let mut terminal = ratatui::init();
-    let result = run_loop(&mut terminal, &mut player, &mut playback_handle);
+    let result = run_loop(&mut terminal, &mut player, &mut playback_handle, &theme);
 
     // Restore terminal
     ratatui::restore();
@@ -63,6 +64,7 @@ fn run_loop(
     terminal: &mut DefaultTerminal,
     player: &mut Player,
     playback_handle: &mut Option<std::thread::JoinHandle<Result<()>>>,
+    theme: &Theme,
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let save_interval = Duration::from_secs(30);
@@ -70,7 +72,7 @@ fn run_loop(
 
     loop {
         // Draw
-        terminal.draw(|frame| draw(frame, player))?;
+        terminal.draw(|frame| draw(frame, player, theme))?;
 
         // Check if playback thread finished (track ended naturally)
         if let Some(handle) = playback_handle.as_ref()
@@ -148,7 +150,7 @@ fn handle_action(
     Ok(())
 }
 
-fn draw(frame: &mut Frame, player: &Player) {
+fn draw(frame: &mut Frame, player: &Player, theme: &Theme) {
     let area = frame.area();
 
     let chunks = Layout::default()
@@ -160,13 +162,17 @@ fn draw(frame: &mut Frame, player: &Player) {
         ])
         .split(area);
 
-    draw_track_info(frame, chunks[0], player);
-    draw_playlist(frame, chunks[1], player);
-    draw_status_bar(frame, chunks[2], player);
+    draw_track_info(frame, chunks[0], player, theme);
+    draw_playlist(frame, chunks[1], player, theme);
+    draw_status_bar(frame, chunks[2], player, theme);
 }
 
-fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player) {
-    let block = Block::default().borders(Borders::ALL).title(" kora ");
+fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border)
+        .title(" kora ")
+        .title_style(theme.title);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -190,14 +196,9 @@ fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player) {
     let track_line = Line::from(vec![
         Span::styled(
             format!("[{queue_pos}/{queue_total}] "),
-            Style::default().fg(Color::DarkGray),
+            theme.track_position,
         ),
-        Span::styled(
-            track_name,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(track_name, theme.track_title),
     ]);
     frame.render_widget(Paragraph::new(track_line), chunks[0]);
 
@@ -217,16 +218,16 @@ fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player) {
     );
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(theme.progress_bar.patch(theme.progress_bg))
         .ratio(ratio)
         .label(progress_label);
     frame.render_widget(gauge, chunks[1]);
 
     // Status line
-    let state_icon = match player.state() {
-        PlaybackState::Playing => "▶ Playing",
-        PlaybackState::Paused => "⏸ Paused",
-        PlaybackState::Stopped => "■ Stopped",
+    let (state_icon, state_style) = match player.state() {
+        PlaybackState::Playing => ("▶ Playing", theme.status_playing),
+        PlaybackState::Paused => ("⏸ Paused", theme.status_paused),
+        PlaybackState::Stopped => ("■ Stopped", theme.status_stopped),
     };
 
     let eq_info = player
@@ -235,17 +236,21 @@ fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player) {
         .unwrap_or_default();
 
     let status = Line::from(vec![
-        Span::styled(state_icon, Style::default().fg(Color::Green)),
+        Span::styled(state_icon, state_style),
         Span::styled(
             format!("  Vol: {:+.0}dB{eq_info}", player.volume_db()),
-            Style::default().fg(Color::DarkGray),
+            theme.status_info,
         ),
     ]);
     frame.render_widget(Paragraph::new(status), chunks[2]);
 }
 
-fn draw_playlist(frame: &mut Frame, area: Rect, player: &Player) {
-    let block = Block::default().borders(Borders::ALL).title(" Playlist ");
+fn draw_playlist(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border)
+        .title(" Playlist ")
+        .title_style(theme.title);
 
     let items: Vec<ListItem> = player
         .tracks()
@@ -255,11 +260,9 @@ fn draw_playlist(frame: &mut Frame, area: Rect, player: &Player) {
             let is_current = i == player.current_index();
             let prefix = if is_current { "▶ " } else { "  " };
             let style = if is_current {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme.playlist_current
             } else {
-                Style::default().fg(Color::White)
+                theme.playlist_normal
             };
             ListItem::new(Line::from(Span::styled(
                 format!("{prefix}{}. {}", i + 1, track.display_name()),
@@ -272,20 +275,20 @@ fn draw_playlist(frame: &mut Frame, area: Rect, player: &Player) {
     frame.render_widget(list, area);
 }
 
-fn draw_status_bar(frame: &mut Frame, area: Rect, _player: &Player) {
+fn draw_status_bar(frame: &mut Frame, area: Rect, _player: &Player, theme: &Theme) {
     let help = Line::from(vec![
-        Span::styled("Spc", Style::default().fg(Color::Yellow)),
-        Span::raw(":Play/Pause "),
-        Span::styled("n/p", Style::default().fg(Color::Yellow)),
-        Span::raw(":Next/Prev "),
-        Span::styled("s", Style::default().fg(Color::Yellow)),
-        Span::raw(":Stop "),
-        Span::styled("+/-", Style::default().fg(Color::Yellow)),
-        Span::raw(":Vol "),
-        Span::styled("←/→", Style::default().fg(Color::Yellow)),
-        Span::raw(":Seek "),
-        Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(":Quit"),
+        Span::styled("Spc", theme.help_key),
+        Span::styled(":Play/Pause ", theme.help_text),
+        Span::styled("n/p", theme.help_key),
+        Span::styled(":Next/Prev ", theme.help_text),
+        Span::styled("s", theme.help_key),
+        Span::styled(":Stop ", theme.help_text),
+        Span::styled("+/-", theme.help_key),
+        Span::styled(":Vol ", theme.help_text),
+        Span::styled("←/→", theme.help_key),
+        Span::styled(":Seek ", theme.help_text),
+        Span::styled("q", theme.help_key),
+        Span::styled(":Quit", theme.help_text),
     ]);
     frame.render_widget(Paragraph::new(help), area);
 }

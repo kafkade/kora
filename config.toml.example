@@ -1,0 +1,21 @@
+# kora configuration
+# Place this file at ~/.config/kora/config.toml (Linux/macOS)
+# or %APPDATA%/kora/config.toml (Windows)
+
+# Default volume in dB (-30 to +6)
+# default_volume = 0.0
+
+# Default music directory (used when running kora without arguments)
+# music_dir = "~/Music"
+
+# Default theme
+# theme = "Nord"
+
+# Default EQ preset (Flat, Rock, Pop, Jazz, Classical, etc.)
+# eq_preset = "Flat"
+
+# Output sample rate override (Hz)
+# sample_rate = 44100
+
+# Ring buffer size in milliseconds (50-500, higher = more latency but fewer underruns)
+# buffer_ms = 200
