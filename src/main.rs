@@ -30,9 +30,9 @@ struct Cli {
     #[arg(value_name = "INPUT")]
     inputs: Vec<PathBuf>,
 
-    /// Volume in dB (e.g., -3 for quieter, 0 for default)
-    #[arg(long, default_value = "0")]
-    volume: f32,
+    /// Volume in dB (e.g., -3 for quieter, 0 for default). Overrides config.
+    #[arg(long)]
+    volume: Option<f32>,
 
     /// EQ preset name (e.g., Rock, Jazz, Pop, Classical, Bass Boost)
     #[arg(long, value_name = "PRESET")]
@@ -56,6 +56,12 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let config = core::config::KoraConfig::load()?;
+
+    tracing::debug!(
+        "Config path: {}",
+        core::config::KoraConfig::config_path().display()
+    );
 
     if cli.list_eq_presets {
         println!("Available EQ presets:");
@@ -67,13 +73,26 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if cli.inputs.is_empty() {
-        eprintln!("Usage: kora <file.mp3|file.flac|...>");
-        eprintln!("       kora ~/Music/");
-        std::process::exit(1);
-    }
+    let volume = cli.volume.unwrap_or(config.default_volume);
+    let eq_preset = cli.eq_preset.or(config.eq_preset);
 
-    let tracks = providers::local::resolve_inputs(&cli.inputs)?;
+    let inputs = if cli.inputs.is_empty() {
+        if let Some(ref music_dir) = config.music_dir {
+            vec![music_dir.clone()]
+        } else {
+            eprintln!("Usage: kora <file.mp3|file.flac|...>");
+            eprintln!("       kora ~/Music/");
+            eprintln!(
+                "Tip: set music_dir in {} to skip this.",
+                core::config::KoraConfig::config_path().display()
+            );
+            std::process::exit(1);
+        }
+    } else {
+        cli.inputs
+    };
+
+    let tracks = providers::local::resolve_inputs(&inputs)?;
 
     if tracks.is_empty() {
         eprintln!("No playable audio files found.");
@@ -83,7 +102,7 @@ fn main() -> Result<()> {
     tracing::info!("Playing {} track(s)", tracks.len());
 
     // Launch TUI player
-    let player = playback::player::Player::new(tracks, cli.volume, cli.eq_preset.as_deref())?;
+    let player = playback::player::Player::new(tracks, volume, eq_preset.as_deref())?;
     tui::app::run(player, cli.no_restore)?;
 
     Ok(())
