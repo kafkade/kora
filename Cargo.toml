@@ -14,7 +14,7 @@ categories = ["multimedia::audio", "command-line-utilities"]
 symphonia = { version = "0.5", features = ["mp3", "flac", "ogg", "vorbis", "wav", "pcm"] }
 
 # Audio output (cross-platform)
-cpal = "0.15"
+cpal = "0.17"
 
 # Lock-free ring buffer for real-time audio
 rtrb = "0.3"
