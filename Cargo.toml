@@ -1,0 +1,54 @@
+[package]
+name = "kora"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, multi-source terminal audio player"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kafkade/kora"
+readme = "README.md"
+keywords = ["audio", "music", "player", "tui", "terminal"]
+categories = ["multimedia::audio", "command-line-utilities"]
+
+[dependencies]
+# Audio decoding (pure Rust, no C deps)
+symphonia = { version = "0.5", features = ["mp3", "flac", "ogg", "vorbis", "wav", "pcm"] }
+
+# Audio output (cross-platform)
+cpal = "0.15"
+
+# Lock-free ring buffer for real-time audio
+rtrb = "0.3"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Config & serialization
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Async runtime (for network I/O, IPC)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time"] }
+
+# HTTP client (for radio, podcasts)
+reqwest = { version = "0.12", features = ["stream"] }
+
+# Metadata / tags
+lofty = "0.22"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Directory paths (XDG, etc.)
+dirs = "6"
+
+# Ctrl+C handling
+ctrlc = "3"
