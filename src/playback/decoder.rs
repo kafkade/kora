@@ -16,6 +16,7 @@ pub struct DecodedAudio {
     pub samples: Vec<f32>,
     pub sample_rate: u32,
     pub channels: usize,
+    #[allow(dead_code)] // Exposed for future benchmarking/diagnostics
     pub decode_time_ms: f64,
 }
 

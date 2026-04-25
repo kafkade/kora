@@ -8,12 +8,14 @@ use rtrb::RingBuffer;
 
 /// Information about an available audio output device.
 #[derive(Debug)]
+#[allow(dead_code)] // Used in tests and future device selection UI
 pub struct AudioDevice {
     pub name: String,
     pub is_default: bool,
 }
 
 /// List all available audio output devices.
+#[allow(dead_code)] // Used in tests and future device selection UI
 pub fn list_devices() -> Result<Vec<AudioDevice>> {
     let host = cpal::default_host();
     let default_name = host
