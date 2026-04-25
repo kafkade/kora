@@ -20,7 +20,7 @@ cpal = "0.15"
 rtrb = "0.3"
 
 # TUI
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 
 # CLI
