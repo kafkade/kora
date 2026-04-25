@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -138,11 +138,15 @@ pub fn play_audio(
 }
 
 /// Play audio with position tracking and pause/resume support.
+///
+/// `volume` is a shared atomic storing the f32 linear gain as raw bits
+/// (`f32::to_bits()`). The producer reads it on each chunk, so volume
+/// changes from the Player take effect immediately — no track restart needed.
 pub fn play_audio_with_position(
     samples: &[f32],
     sample_rate: u32,
     channels: usize,
-    volume: f32,
+    volume: &Arc<AtomicU32>,
     stop: &Arc<AtomicBool>,
     pause: &Arc<AtomicBool>,
     samples_played: &AtomicU64,
@@ -194,10 +198,14 @@ pub fn play_audio_with_position(
             std::thread::sleep(std::time::Duration::from_millis(5));
             continue;
         }
+
+        // Read current volume once per chunk for live volume control
+        let vol = f32::from_bits(volume.load(Ordering::Relaxed));
+
         let chunk_end = (pos + slots).min(samples.len());
         let chunk = &samples[pos..chunk_end];
         for &s in chunk {
-            let _ = producer.push(s * volume);
+            let _ = producer.push(s * vol);
         }
         pos = chunk_end;
         samples_played.store(pos as u64, Ordering::Relaxed);

@@ -6,12 +6,13 @@
 //! current track) without blocking the audio pipeline.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
 use crate::backend::cpal_backend;
+use crate::core::session::Session;
 use crate::core::track::{Track, TrackSource};
 use crate::core::types::Volume;
 use crate::playback::decoder;
@@ -65,6 +66,7 @@ pub struct Player {
 
     stop_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
+    shared_volume: Arc<AtomicU32>,
     position: Arc<SharedPosition>,
 }
 
@@ -81,6 +83,8 @@ impl Player {
             None => None,
         };
 
+        let initial_linear = Volume(volume_db).as_linear();
+
         Ok(Self {
             tracks,
             current_index: 0,
@@ -96,6 +100,7 @@ impl Player {
             pause_offset: Duration::ZERO,
             stop_flag: Arc::new(AtomicBool::new(false)),
             pause_flag: Arc::new(AtomicBool::new(false)),
+            shared_volume: Arc::new(AtomicU32::new(initial_linear.to_bits())),
             position: Arc::new(SharedPosition {
                 samples_played: AtomicU64::new(0),
                 total_samples: AtomicU64::new(0),
@@ -148,6 +153,10 @@ impl Player {
             .store(total_samples, Ordering::Relaxed);
         self.position.samples_played.store(0, Ordering::Relaxed);
 
+        // Sync shared volume so the producer thread picks up the current value
+        self.shared_volume
+            .store(self.volume.as_linear().to_bits(), Ordering::Relaxed);
+
         self.state = PlaybackState::Playing;
         self.playback_start = Some(Instant::now());
 
@@ -160,7 +169,7 @@ impl Player {
         let samples = self.current_samples.take()?;
         let sample_rate = self.current_sample_rate;
         let channels = self.current_channels;
-        let volume = self.volume.as_linear();
+        let volume = self.shared_volume.clone();
 
         // Reset flags for this playback session.
         self.stop_flag.store(false, Ordering::Relaxed);
@@ -174,7 +183,7 @@ impl Player {
                 &samples,
                 sample_rate,
                 channels,
-                volume,
+                &volume,
                 &stop,
                 &pause,
                 &position.samples_played,
@@ -238,10 +247,14 @@ impl Player {
             }
             PlayerCommand::VolumeUp => {
                 self.volume = Volume((self.volume.0 + 1.0).min(6.0));
+                self.shared_volume
+                    .store(self.volume.as_linear().to_bits(), Ordering::Relaxed);
                 PlayerAction::None
             }
             PlayerCommand::VolumeDown => {
                 self.volume = Volume((self.volume.0 - 1.0).max(-30.0));
+                self.shared_volume
+                    .store(self.volume.as_linear().to_bits(), Ordering::Relaxed);
                 PlayerAction::None
             }
             PlayerCommand::Quit => PlayerAction::Quit,
@@ -312,6 +325,48 @@ impl Player {
     /// Get current track index (0-based).
     pub fn current_index(&self) -> usize {
         self.current_index
+    }
+
+    /// Build a [`Session`] from current player state and save it to disk.
+    pub fn save_session(&self) -> Result<()> {
+        let session = Session {
+            track_path: self.current_track().map(|t| t.path_string()),
+            position_ms: self.current_position().as_millis() as u64,
+            queue: self.tracks.iter().map(|t| t.path_string()).collect(),
+            queue_index: self.current_index,
+            volume_db: self.volume.0,
+            eq_preset: self.eq_preset_name().map(|s| s.to_string()),
+        };
+        session.save(&Session::session_path())
+    }
+
+    /// Apply a saved session: match track by path, restore queue index,
+    /// volume, and EQ preset. Returns `true` if a matching track was found.
+    pub fn restore_session(&mut self, session: &Session) -> bool {
+        self.volume = Volume(session.volume_db);
+
+        if let Some(ref preset_name) = session.eq_preset {
+            if let Some(preset) = eq::find_preset(preset_name) {
+                self.eq_preset = Some(preset);
+            } else {
+                tracing::warn!("Saved EQ preset '{preset_name}' not found, ignoring");
+            }
+        }
+
+        if let Some(ref track_path) = session.track_path {
+            if let Some(idx) = self
+                .tracks
+                .iter()
+                .position(|t| t.path_string() == *track_path)
+            {
+                self.current_index = idx;
+                return true;
+            }
+            tracing::warn!(
+                "Saved track '{track_path}' not found in queue, starting from beginning"
+            );
+        }
+        false
     }
 }
 
