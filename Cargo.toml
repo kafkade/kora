@@ -37,7 +37,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "
 reqwest = { version = "0.13", features = ["stream"] }
 
 # Metadata / tags
-lofty = "0.22"
+lofty = "0.24"
 
 # Logging
 tracing = "0.1"
