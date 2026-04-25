@@ -20,7 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dual MIT + Apache 2.0 licensing
 - Graceful handling of corrupt and truncated audio files (skip bad frames, continue playback)
 - Decode performance reporting in log output (realtime multiplier)
+- TUI with track info, progress bar, and transport status (Playing/Paused/Stopped)
+- Keyboard controls: Space (play/pause), n/p (next/prev), +/- (volume), s (stop), q (quit)
+- Playlist panel showing queue with current track highlighted
+- 10-band graphic equalizer with 11 presets (Flat, Rock, Pop, Jazz, Classical, Electronic, Hip Hop, Acoustic, Bass Boost, Treble Boost, Vocal)
+- `--eq-preset` CLI flag and `--list-eq-presets` to show available presets
+- Low-shelf filter at 31Hz and high-shelf at highest band for natural EQ response
 
 ### Fixed
 
 - Audio playback crash caused by unsafe ring buffer Consumer handling in CPAL callback
+- Pause/resume: playback now pauses and resumes in place without re-decoding the track
