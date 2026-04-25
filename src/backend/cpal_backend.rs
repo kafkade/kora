@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -93,9 +93,9 @@ pub fn play_audio(
             )
         })?;
 
-    stream.play().with_context(|| {
-        format!("Failed to start playback on '{device_name}'")
-    })?;
+    stream
+        .play()
+        .with_context(|| format!("Failed to start playback on '{device_name}'"))?;
 
     // Push samples into the ring buffer from the main thread.
     // Volume scaling happens here (producer side), not in the callback.

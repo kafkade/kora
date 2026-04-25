@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 
@@ -20,12 +20,7 @@ pub fn play_tracks(tracks: &[Track], volume_db: f32) -> Result<()> {
             }
         };
 
-        println!(
-            "[{}/{}] {}",
-            i + 1,
-            tracks.len(),
-            track.display_name()
-        );
+        println!("[{}/{}] {}", i + 1, tracks.len(), track.display_name());
 
         let decoded = super::decoder::decode_file(path)
             .with_context(|| format!("Failed to decode {}", path.display()))?;
