@@ -92,6 +92,10 @@ Providers implement capability-based traits (evolving — do not stabilize until
 - No plugin system before 1.0
 - No mobile app before CLI/TUI has proven architecture
 
+## Git Policy
+
+**Never execute Git commands that modify history or submit code.** This includes `git commit`, `git push`, `git rebase`, `git merge`, `git reset`, `git cherry-pick`, `git revert`, and `git tag`. Read-only commands like `git status`, `git diff`, `git log`, and `git branch` are fine. The maintainer must always review and commit changes themselves.
+
 ## Reference Documents
 
 The full product roadmap with architecture decisions, data model, competitive analysis, and phased milestones is in `ROADMAP.md`.
