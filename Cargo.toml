@@ -28,7 +28,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Config & serialization
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1.1"
 
 # Async runtime (for network I/O, IPC)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time"] }
