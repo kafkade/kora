@@ -8,9 +8,9 @@
 //   tui/      — terminal UI (ratatui)
 //   ipc/      — remote control protocol
 
+mod backend;
 mod core;
 mod playback;
-mod backend;
 mod providers;
 
 use std::path::PathBuf;
@@ -19,7 +19,11 @@ use anyhow::Result;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "kora", version, about = "A fast, multi-source terminal audio player")]
+#[command(
+    name = "kora",
+    version,
+    about = "A fast, multi-source terminal audio player"
+)]
 struct Cli {
     /// Files, directories, or URLs to play
     #[arg(value_name = "INPUT")]

@@ -11,6 +11,7 @@ pub struct Track {
 #[derive(Debug, Clone)]
 pub enum TrackSource {
     File(PathBuf),
+    #[allow(dead_code)] // Used in future phases (radio, podcasts)
     Url(String),
 }
 
@@ -18,7 +19,9 @@ pub enum TrackSource {
 pub struct TrackMetadata {
     pub title: Option<String>,
     pub artist: Option<String>,
+    #[allow(dead_code)] // Used in future phases (library browsing)
     pub album: Option<String>,
+    #[allow(dead_code)] // Used in future phases (progress bar)
     pub duration: Option<Duration>,
 }
 

@@ -1,4 +1,4 @@
-/// Shared audio types used across layers.
+//! Shared audio types used across layers.
 
 /// Volume represented in decibels.
 #[derive(Debug, Clone, Copy)]

@@ -4,6 +4,17 @@ A fast, multi-source terminal audio player built in Rust.
 
 **kora** plays local audio files, internet radio stations, and podcasts from your terminal — with an equalizer, visualizer, themes, and more planned.
 
+### Why "kora"?
+
+The [kora](https://en.wikipedia.org/wiki/Kora_(instrument)) is a 21-string West African harp — one of the most beautiful and versatile acoustic instruments in the world. Built from a calabash gourd, a hardwood neck, and cowhide, it produces a sound often compared to a harp or a flamenco guitar: rich, resonant, and unmistakable.
+
+The name reflects the project's values:
+
+- **Craftsmanship** — the kora is handmade by artisans, each one unique. This player is built with the same care: hand-tuned audio pipeline, no shortcuts.
+- **Versatility** — a single kora covers melody, bass, and rhythm simultaneously. This player handles local files, radio, and podcasts in one tool.
+- **Tradition meets modernity** — the kora is an ancient instrument that thrives in modern music, from Toumani Diabaté to electronic collaborations. This player brings a modern Rust architecture to the timeless act of listening.
+- **Short and distinctive** — four characters, easy to type in a terminal, easy to remember.
+
 ## Quick Start
 
 ```sh
