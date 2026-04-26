@@ -78,6 +78,11 @@ pub enum PlayerCommand {
     #[allow(dead_code)]
     CancelSleepTimer,
     CycleSleepTimer,
+    CycleEqPreset,
+    EqBandUp,
+    EqBandDown,
+    EqBandLeft,
+    EqBandRight,
     Quit,
 }
 
@@ -119,6 +124,9 @@ pub struct Player {
     volume: Volume,
     state: PlaybackState,
     eq_preset: Option<&'static EqPreset>,
+    eq_preset_index: usize,
+    eq_selected_band: usize,
+    custom_gains: Option<[f32; 10]>,
     shuffle: bool,
     repeat: RepeatMode,
     shuffle_order: Vec<usize>,
@@ -156,6 +164,15 @@ impl Player {
 
         let initial_linear = Volume(volume_db).as_linear();
 
+        let eq_preset_index = preset
+            .map(|p| {
+                eq::PRESETS
+                    .iter()
+                    .position(|bp| std::ptr::eq(bp, p))
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+
         let favorites = Favorites::load().unwrap_or_else(|e| {
             tracing::warn!("Failed to load favorites: {e}");
             Favorites::default()
@@ -167,6 +184,9 @@ impl Player {
             volume: Volume(volume_db),
             state: PlaybackState::Stopped,
             eq_preset: preset,
+            eq_preset_index,
+            eq_selected_band: 0,
+            custom_gains: None,
             shuffle: false,
             repeat: RepeatMode::Off,
             shuffle_order: Vec::new(),
@@ -203,7 +223,13 @@ impl Player {
                 .with_context(|| format!("Failed to stream {url}"))?,
         };
 
-        let samples = if let Some(p) = self.eq_preset {
+        let samples = if let Some(gains) = self.custom_gains {
+            let mut eq = Equalizer::new(decoded.sample_rate, decoded.channels);
+            eq.set_gains(gains);
+            let mut buf = decoded.samples;
+            eq.process(&mut buf, decoded.channels);
+            buf
+        } else if let Some(p) = self.eq_preset {
             let mut eq = Equalizer::new(decoded.sample_rate, decoded.channels);
             eq.apply_preset(p);
             let mut buf = decoded.samples;
@@ -415,6 +441,36 @@ impl Player {
                 }
                 PlayerAction::None
             }
+            PlayerCommand::CycleEqPreset => {
+                self.eq_preset_index = (self.eq_preset_index + 1) % eq::PRESETS.len();
+                self.eq_preset = Some(&eq::PRESETS[self.eq_preset_index]);
+                self.custom_gains = None;
+                PlayerAction::None
+            }
+            PlayerCommand::EqBandUp => {
+                let mut gains = self.eq_gains();
+                gains[self.eq_selected_band] = (gains[self.eq_selected_band] + 1.0).min(12.0);
+                self.custom_gains = Some(gains);
+                PlayerAction::None
+            }
+            PlayerCommand::EqBandDown => {
+                let mut gains = self.eq_gains();
+                gains[self.eq_selected_band] = (gains[self.eq_selected_band] - 1.0).max(-12.0);
+                self.custom_gains = Some(gains);
+                PlayerAction::None
+            }
+            PlayerCommand::EqBandLeft => {
+                if self.eq_selected_band > 0 {
+                    self.eq_selected_band -= 1;
+                }
+                PlayerAction::None
+            }
+            PlayerCommand::EqBandRight => {
+                if self.eq_selected_band < 9 {
+                    self.eq_selected_band += 1;
+                }
+                PlayerAction::None
+            }
             PlayerCommand::Quit => PlayerAction::Quit,
         }
     }
@@ -456,7 +512,35 @@ impl Player {
 
     /// Get EQ preset name (if any).
     pub fn eq_preset_name(&self) -> Option<&str> {
+        if self.custom_gains.is_some() {
+            return None;
+        }
         self.eq_preset.map(|p| p.name)
+    }
+
+    /// Get current EQ display name — preset name or "Custom" if gains were adjusted.
+    pub fn eq_display_name(&self) -> &str {
+        if self.custom_gains.is_some() {
+            "Custom"
+        } else {
+            self.eq_preset.map(|p| p.name).unwrap_or("Off")
+        }
+    }
+
+    /// Get current EQ gains — custom if set, else preset, else flat.
+    pub fn eq_gains(&self) -> [f32; 10] {
+        if let Some(gains) = self.custom_gains {
+            gains
+        } else if let Some(p) = self.eq_preset {
+            p.gains
+        } else {
+            [0.0; 10]
+        }
+    }
+
+    /// Get the currently selected EQ band index (0-9).
+    pub fn eq_selected_band(&self) -> usize {
+        self.eq_selected_band
     }
 
     /// Add a track to the queue and start playing it immediately.
@@ -880,5 +964,93 @@ mod tests {
         player.handle_command(PlayerCommand::CancelSleepTimer);
         let restored_bits = player.shared_volume.load(Ordering::Relaxed);
         assert_eq!(restored_bits, original_bits);
+    }
+
+    #[test]
+    fn eq_cycle_preset() {
+        let mut player = test_player();
+        assert_eq!(player.eq_display_name(), "Off");
+
+        player.handle_command(PlayerCommand::CycleEqPreset);
+        // Starts at index 0, cycles to index 1 (Rock)
+        assert_eq!(player.eq_display_name(), "Rock");
+
+        player.handle_command(PlayerCommand::CycleEqPreset);
+        assert_eq!(player.eq_display_name(), "Pop");
+    }
+
+    #[test]
+    fn eq_band_navigation() {
+        let mut player = test_player();
+        assert_eq!(player.eq_selected_band(), 0);
+
+        player.handle_command(PlayerCommand::EqBandRight);
+        assert_eq!(player.eq_selected_band(), 1);
+
+        player.handle_command(PlayerCommand::EqBandRight);
+        assert_eq!(player.eq_selected_band(), 2);
+
+        player.handle_command(PlayerCommand::EqBandLeft);
+        assert_eq!(player.eq_selected_band(), 1);
+
+        // Clamp at 0
+        player.handle_command(PlayerCommand::EqBandLeft);
+        player.handle_command(PlayerCommand::EqBandLeft);
+        assert_eq!(player.eq_selected_band(), 0);
+    }
+
+    #[test]
+    fn eq_band_clamp_at_9() {
+        let mut player = test_player();
+        for _ in 0..20 {
+            player.handle_command(PlayerCommand::EqBandRight);
+        }
+        assert_eq!(player.eq_selected_band(), 9);
+    }
+
+    #[test]
+    fn eq_band_gain_adjust() {
+        let mut player = test_player();
+        assert_eq!(player.eq_gains(), [0.0; 10]);
+
+        player.handle_command(PlayerCommand::EqBandUp);
+        let gains = player.eq_gains();
+        assert_eq!(gains[0], 1.0);
+        assert_eq!(gains[1], 0.0);
+
+        player.handle_command(PlayerCommand::EqBandDown);
+        player.handle_command(PlayerCommand::EqBandDown);
+        let gains = player.eq_gains();
+        assert_eq!(gains[0], -1.0);
+    }
+
+    #[test]
+    fn eq_gain_clamp_at_12() {
+        let mut player = test_player();
+        for _ in 0..20 {
+            player.handle_command(PlayerCommand::EqBandUp);
+        }
+        assert_eq!(player.eq_gains()[0], 12.0);
+
+        for _ in 0..30 {
+            player.handle_command(PlayerCommand::EqBandDown);
+        }
+        assert_eq!(player.eq_gains()[0], -12.0);
+    }
+
+    #[test]
+    fn eq_custom_gains_override_preset() {
+        let mut player = test_player();
+        player.handle_command(PlayerCommand::CycleEqPreset); // Go to Rock
+        assert_eq!(player.eq_display_name(), "Rock");
+
+        // Adjusting a band makes it "Custom"
+        player.handle_command(PlayerCommand::EqBandUp);
+        assert_eq!(player.eq_display_name(), "Custom");
+        assert!(player.eq_preset_name().is_none());
+
+        // Cycling preset resets custom
+        player.handle_command(PlayerCommand::CycleEqPreset);
+        assert_ne!(player.eq_display_name(), "Custom");
     }
 }

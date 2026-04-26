@@ -1,6 +1,6 @@
 [package]
-name = "kora"
-version = "0.2.0"
+name = "kora-player"
+version = "0.3.0"
 edition = "2024"
 description = "A fast, multi-source terminal audio player"
 license = "MIT OR Apache-2.0"
@@ -8,6 +8,10 @@ repository = "https://github.com/kafkade/kora"
 readme = "README.md"
 keywords = ["audio", "music", "player", "tui", "terminal"]
 categories = ["multimedia::audio", "command-line-utilities"]
+
+[[bin]]
+name = "kora"
+path = "src/main.rs"
 
 [dependencies]
 # Audio decoding (pure Rust, no C deps)
