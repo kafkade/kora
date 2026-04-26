@@ -20,6 +20,11 @@
 # Ring buffer size in milliseconds (50-500, higher = more latency but fewer underruns)
 # buffer_ms = 200
 
+# ReplayGain mode: "off", "track" (default), or "album"
+# "track" normalizes each track individually
+# "album" preserves relative loudness within albums
+# replaygain = "track"
+
 # Custom EQ presets (in addition to built-in ones)
 # Each preset has a name and 10 band gains in dB (-12 to +12)
 # Bands: 31Hz, 62Hz, 125Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 16kHz

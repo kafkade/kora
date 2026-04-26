@@ -337,6 +337,8 @@ fn run_loop(
                 KeyCode::Char('z') => Some(PlayerCommand::ToggleShuffle),
                 KeyCode::Char('r') => Some(PlayerCommand::CycleRepeat),
                 KeyCode::Char('S') => Some(PlayerCommand::CycleSleepTimer),
+                KeyCode::Char(']') => Some(PlayerCommand::SpeedUp),
+                KeyCode::Char('[') => Some(PlayerCommand::SpeedDown),
                 KeyCode::Char('v') => {
                     visualizer_mode = match visualizer_mode {
                         VisualizerMode::Off => VisualizerMode::Normal,
@@ -570,11 +572,32 @@ fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
 
     let repeat_info = format!("  Repeat: {}", player.repeat());
 
+    let speed_info = if (player.speed() - 1.0).abs() >= 0.01 {
+        format!("  Speed: {:.2}x", player.speed())
+    } else {
+        String::new()
+    };
+
+    let rg_info_str =
+        if player.replaygain_mode() != crate::playback::replaygain::ReplayGainMode::Off {
+            if let Some(rg) = player.current_replaygain() {
+                let gain = crate::playback::replaygain::gain_to_apply(rg, player.replaygain_mode());
+                match gain {
+                    Some(db) => format!("  RG: {:+.1}dB", db),
+                    None => String::new(),
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
     let status = Line::from(vec![
         Span::styled(state_icon, state_style),
         Span::styled(
             format!(
-                "  Vol: {:+.0}dB{eq_info}{shuffle_info}{repeat_info}  Theme: {}",
+                "  Vol: {:+.0}dB{eq_info}{shuffle_info}{repeat_info}{speed_info}{rg_info_str}  Theme: {}",
                 player.volume_db(),
                 theme.name
             ),
@@ -645,6 +668,8 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
         Span::styled(":Repeat ", theme.help_text),
         Span::styled("v/V", theme.help_key),
         Span::styled(":Viz ", theme.help_text),
+        Span::styled("[/]", theme.help_key),
+        Span::styled(":Speed ", theme.help_text),
         Span::styled("S", theme.help_key),
         Span::styled(":Sleep ", theme.help_text),
         Span::styled("q", theme.help_key),
