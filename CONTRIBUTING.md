@@ -96,21 +96,34 @@ cargo test -- --nocapture
 ```
 kora/
 ├── src/
-│   ├── main.rs            # Entry point, CLI parsing
-│   ├── core/              # Domain models, traits, config (no audio deps)
-│   │   ├── track.rs       # Track, TrackMetadata types
-│   │   └── types.rs       # Volume, shared types
-│   ├── playback/          # Decode, DSP, state machine
-│   │   ├── decoder.rs     # symphonia decode pipeline
-│   │   └── engine.rs      # Playback orchestration
-│   ├── backend/           # Audio output adapters
-│   │   └── cpal_backend.rs # CPAL output via rtrb ring buffer
-│   └── providers/         # Audio source implementations
-│       └── local.rs       # Local file resolver
+│   ├── main.rs              # Entry point, CLI parsing
+│   ├── core/                # Domain models, traits, config (no audio deps)
+│   │   ├── config.rs        # KoraConfig, config.toml loading
+│   │   ├── session.rs       # Session persistence (save/restore state)
+│   │   ├── track.rs         # Track, TrackMetadata, TrackSource types
+│   │   └── types.rs         # Volume, shared types
+│   ├── playback/            # Decode, DSP, state machine
+│   │   ├── decoder.rs       # symphonia file decode pipeline
+│   │   ├── stream_decoder.rs # HTTP stream decode (non-seekable sources)
+│   │   ├── dsp.rs           # Biquad IIR filters (Transposed Direct Form II)
+│   │   ├── eq.rs            # 10-band graphic equalizer with presets
+│   │   ├── engine.rs        # Sequential playback (non-TUI mode)
+│   │   └── player.rs        # Player controller (TUI ↔ audio bridge)
+│   ├── backend/             # Audio output adapters
+│   │   └── cpal_backend.rs  # CPAL output via rtrb ring buffer
+│   ├── providers/           # Audio source implementations
+│   │   ├── local.rs         # Local file resolver
+│   │   ├── radio.rs         # Radio Browser API client
+│   │   └── stations.rs      # Custom stations from stations.toml
+│   └── tui/                 # Terminal UI
+│       ├── app.rs           # TUI event loop, rendering, input
+│       └── theme.rs         # Nord color theme
 ├── docs/
-│   └── adr/               # Architecture Decision Records
-├── ROADMAP.md             # Full product roadmap
-└── CHANGELOG.md           # Keep a Changelog format
+│   └── adr/                 # Architecture Decision Records
+├── config.toml.example      # Example user configuration
+├── stations.toml.example    # Example custom radio stations
+├── ROADMAP.md               # Full product roadmap
+└── CHANGELOG.md             # Keep a Changelog format
 ```
 
 ### Key Architecture Decisions
