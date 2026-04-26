@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Persisted playback state saved between sessions.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Session {
     pub track_path: Option<String>,
     pub position_ms: u64,
@@ -18,6 +18,28 @@ pub struct Session {
     pub shuffle: bool,
     #[serde(default)]
     pub repeat: String,
+    #[serde(default = "default_speed")]
+    pub speed: f32,
+}
+
+fn default_speed() -> f32 {
+    1.0
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            track_path: None,
+            position_ms: 0,
+            queue: Vec::new(),
+            queue_index: 0,
+            volume_db: 0.0,
+            eq_preset: None,
+            shuffle: false,
+            repeat: String::new(),
+            speed: default_speed(),
+        }
+    }
 }
 
 impl Session {
@@ -96,6 +118,7 @@ mod tests {
             eq_preset: Some("Rock".to_string()),
             shuffle: true,
             repeat: "All".to_string(),
+            speed: 1.5,
         };
 
         session.save(&path).unwrap();
@@ -130,5 +153,42 @@ mod tests {
         let path = Session::session_path();
         assert!(path.ends_with("session.toml"));
         assert!(path.to_string_lossy().contains("kora"));
+    }
+
+    #[test]
+    fn default_speed_is_1_0() {
+        let session = Session::default();
+        assert_eq!(session.speed, 1.0);
+    }
+
+    #[test]
+    fn missing_speed_field_defaults_to_1_0() {
+        let toml_str = r#"
+position_ms = 0
+queue = []
+queue_index = 0
+volume_db = 0.0
+shuffle = false
+repeat = "Off"
+"#;
+        let session: Session = toml::from_str(toml_str).unwrap();
+        assert_eq!(session.speed, 1.0);
+    }
+
+    #[test]
+    fn speed_round_trip() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("speed_round_trip.toml");
+
+        let session = Session {
+            speed: 1.75,
+            ..Session::default()
+        };
+        session.save(&path).unwrap();
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.speed, 1.75);
+
+        let _ = std::fs::remove_file(&path);
     }
 }

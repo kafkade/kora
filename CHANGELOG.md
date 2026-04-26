@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Visualizer uses FFT with Hanning window, log-frequency binning, and smoothing for natural motion
 - Gapless playback: next track pre-decoded at 80% progress, seamless ring buffer transition with no audible gap
 - Gapless works across same-format tracks; falls back gracefully on sample rate or channel mismatch
+- Playback speed control: press `]`/`[` to adjust ±0.25x (range 0.25x–3.0x), speed shown in status bar
+- ReplayGain volume normalization: reads tags from ID3v2, Vorbis Comments, and MP4 files
+- ReplayGain applies track gain by default, album gain as option, configurable via `replaygain` in `config.toml`
+- ReplayGain info displayed in TUI status bar when active
 
 ### Changed
 

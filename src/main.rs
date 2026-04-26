@@ -103,6 +103,7 @@ fn main() -> Result<()> {
     let volume = cli.volume.unwrap_or(config.default_volume);
     let eq_preset = cli.eq_preset.or(config.eq_preset);
     let theme_name = cli.theme.or_else(|| Some(config.theme.clone()));
+    let rg_mode = playback::replaygain::ReplayGainMode::from_str_config(&config.replaygain);
 
     // Handle --radio: search Radio Browser API and play the first match.
     if let Some(ref query) = cli.radio {
@@ -124,7 +125,8 @@ fn main() -> Result<()> {
         }
         let track = stations[0].to_track();
         eprintln!("Playing: {}", track.display_name());
-        let player = playback::player::Player::new(vec![track], volume, eq_preset.as_deref())?;
+        let player =
+            playback::player::Player::new(vec![track], volume, eq_preset.as_deref(), rg_mode)?;
         tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
         return Ok(());
     }
@@ -149,7 +151,8 @@ fn main() -> Result<()> {
         }
         let track = providers::podcast::episode_to_track(&episodes[0]);
         eprintln!("Playing: {}", track.display_name());
-        let player = playback::player::Player::new(vec![track], volume, eq_preset.as_deref())?;
+        let player =
+            playback::player::Player::new(vec![track], volume, eq_preset.as_deref(), rg_mode)?;
         tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
         return Ok(());
     }
@@ -190,7 +193,7 @@ fn main() -> Result<()> {
     tracing::info!("Playing {} track(s)", tracks.len());
 
     // Launch TUI player
-    let player = playback::player::Player::new(tracks, volume, eq_preset.as_deref())?;
+    let player = playback::player::Player::new(tracks, volume, eq_preset.as_deref(), rg_mode)?;
     tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
 
     Ok(())

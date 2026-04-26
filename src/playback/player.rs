@@ -19,6 +19,8 @@ use crate::core::types::Volume;
 use crate::playback::decoder;
 use crate::playback::eq::{self, EqPreset, Equalizer};
 use crate::playback::fft::SpectrumData;
+use crate::playback::replaygain::{self, ReplayGainInfo, ReplayGainMode};
+use crate::playback::speed;
 use crate::playback::stream_decoder;
 
 /// Playback state visible to the TUI.
@@ -79,6 +81,8 @@ pub enum PlayerCommand {
     #[allow(dead_code)]
     CancelSleepTimer,
     CycleSleepTimer,
+    SpeedUp,
+    SpeedDown,
     CycleEqPreset,
     EqBandUp,
     EqBandDown,
@@ -157,6 +161,11 @@ pub struct Player {
     // Gapless playback: pre-decoded next track
     next_track_samples: Option<PreDecodedTrack>,
 
+    speed: f32,
+
+    replaygain_mode: ReplayGainMode,
+    current_rg: Option<ReplayGainInfo>,
+
     favorites: Favorites,
     sleep_timer: Option<SleepTimer>,
 
@@ -169,7 +178,12 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(tracks: Vec<Track>, volume_db: f32, eq_preset: Option<&str>) -> Result<Self> {
+    pub fn new(
+        tracks: Vec<Track>,
+        volume_db: f32,
+        eq_preset: Option<&str>,
+        replaygain_mode: ReplayGainMode,
+    ) -> Result<Self> {
         let preset = match eq_preset {
             Some(name) => Some(eq::find_preset(name).with_context(|| {
                 format!(
@@ -217,6 +231,9 @@ impl Player {
             playback_start: None,
             pause_offset: Duration::ZERO,
             next_track_samples: None,
+            speed: speed::DEFAULT_SPEED,
+            replaygain_mode,
+            current_rg: None,
             favorites,
             sleep_timer: None,
             spectrum: Arc::new(SpectrumData::new(32)),
@@ -244,13 +261,32 @@ impl Player {
                 .with_context(|| format!("Failed to stream {url}"))?,
         };
 
-        let samples =
-            self.apply_eq_to_samples(decoded.samples, decoded.sample_rate, decoded.channels);
+        let mut samples = decoded.samples;
+
+        // Apply ReplayGain before EQ and speed
+        if self.replaygain_mode != ReplayGainMode::Off {
+            if let TrackSource::File(p) = &self.tracks[self.current_index].source {
+                let rg_info = replaygain::read_replaygain(p);
+                if let Some(gain_db) = replaygain::gain_to_apply(&rg_info, self.replaygain_mode) {
+                    replaygain::apply_replaygain(&mut samples, gain_db);
+                    tracing::info!("ReplayGain: {gain_db:+.1}dB");
+                }
+                self.current_rg = Some(rg_info);
+            } else {
+                self.current_rg = None;
+            }
+        } else {
+            self.current_rg = None;
+        }
+
+        let samples = self.apply_eq_to_samples(samples, decoded.sample_rate, decoded.channels);
+        let samples = speed::apply_speed(&samples, decoded.channels, self.speed);
 
         let total_samples = samples.len() as u64;
         let sample_rate = decoded.sample_rate;
         let channels = decoded.channels;
 
+        // Duration accounts for speed: resampled buffer is shorter/longer
         self.current_duration =
             Duration::from_secs_f64(samples.len() as f64 / (sample_rate as f64 * channels as f64));
         self.current_sample_rate = sample_rate;
@@ -522,6 +558,14 @@ impl Player {
                 }
                 PlayerAction::None
             }
+            PlayerCommand::SpeedUp => {
+                self.speed = speed::clamp_speed(self.speed + speed::SPEED_STEP);
+                PlayerAction::None
+            }
+            PlayerCommand::SpeedDown => {
+                self.speed = speed::clamp_speed(self.speed - speed::SPEED_STEP);
+                PlayerAction::None
+            }
             PlayerCommand::CycleEqPreset => {
                 self.eq_preset_index = (self.eq_preset_index + 1) % eq::PRESETS.len();
                 self.eq_preset = Some(&eq::PRESETS[self.eq_preset_index]);
@@ -749,8 +793,21 @@ impl Player {
             TrackSource::Url(_) => return Ok(()),
         };
 
-        let samples =
-            self.apply_eq_to_samples(decoded.samples, decoded.sample_rate, decoded.channels);
+        let mut samples = decoded.samples;
+
+        // Apply ReplayGain before EQ and speed
+        if self.replaygain_mode != ReplayGainMode::Off
+            && let TrackSource::File(p) = &self.tracks[next_idx].source
+        {
+            let rg_info = replaygain::read_replaygain(p);
+            if let Some(gain_db) = replaygain::gain_to_apply(&rg_info, self.replaygain_mode) {
+                replaygain::apply_replaygain(&mut samples, gain_db);
+                tracing::info!("Pre-decode ReplayGain: {gain_db:+.1}dB");
+            }
+        }
+
+        let samples = self.apply_eq_to_samples(samples, decoded.sample_rate, decoded.channels);
+        let samples = speed::apply_speed(&samples, decoded.channels, self.speed);
 
         tracing::info!(
             "Pre-decoded next track [{}] ({}Hz, {}ch)",
@@ -850,6 +907,21 @@ impl Player {
         self.shuffle
     }
 
+    /// Current playback speed multiplier.
+    pub fn speed(&self) -> f32 {
+        self.speed
+    }
+
+    /// Current ReplayGain mode.
+    pub fn replaygain_mode(&self) -> ReplayGainMode {
+        self.replaygain_mode
+    }
+
+    /// ReplayGain info for the currently playing track.
+    pub fn current_replaygain(&self) -> Option<&ReplayGainInfo> {
+        self.current_rg.as_ref()
+    }
+
     /// Current repeat mode.
     pub fn repeat(&self) -> RepeatMode {
         self.repeat
@@ -924,6 +996,7 @@ impl Player {
             eq_preset: self.eq_preset_name().map(|s| s.to_string()),
             shuffle: self.shuffle,
             repeat: self.repeat.to_string(),
+            speed: self.speed,
         };
         session.save(&Session::session_path())
     }
@@ -942,6 +1015,7 @@ impl Player {
         }
 
         self.shuffle = session.shuffle;
+        self.speed = speed::clamp_speed(session.speed);
         self.repeat = match session.repeat.as_str() {
             "All" => RepeatMode::All,
             "One" => RepeatMode::One,
@@ -1088,7 +1162,7 @@ mod tests {
     }
 
     fn test_player() -> Player {
-        Player::new(vec![], 0.0, None).unwrap()
+        Player::new(vec![], 0.0, None, ReplayGainMode::Off).unwrap()
     }
 
     #[test]
@@ -1313,7 +1387,7 @@ mod tests {
         let tracks: Vec<Track> = (0..count)
             .map(|i| Track::from_file(std::path::PathBuf::from(format!("test_track_{i}.mp3"))))
             .collect();
-        Player::new(tracks, 0.0, None).unwrap()
+        Player::new(tracks, 0.0, None, ReplayGainMode::Off).unwrap()
     }
 
     #[test]

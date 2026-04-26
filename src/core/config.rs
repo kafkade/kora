@@ -28,6 +28,8 @@ pub struct KoraConfig {
     pub sample_rate: Option<u32>,
     /// Ring buffer size in milliseconds (50–500).
     pub buffer_ms: u32,
+    /// ReplayGain mode: "off", "track" (default), or "album".
+    pub replaygain: String,
     /// Custom EQ presets (in addition to built-in ones).
     #[serde(default)]
     pub custom_eq_presets: Vec<CustomEqPreset>,
@@ -42,6 +44,7 @@ impl Default for KoraConfig {
             eq_preset: None,
             sample_rate: None,
             buffer_ms: 200,
+            replaygain: "track".to_string(),
             custom_eq_presets: Vec::new(),
         }
     }
@@ -92,6 +95,12 @@ impl KoraConfig {
                 self.buffer_ms
             );
         }
+        if !["off", "track", "album"].contains(&self.replaygain.to_ascii_lowercase().as_str()) {
+            bail!(
+                "replaygain must be \"off\", \"track\", or \"album\", got \"{}\"",
+                self.replaygain
+            );
+        }
         for preset in &self.custom_eq_presets {
             if preset.name.is_empty() {
                 bail!("Custom EQ preset name must not be empty");
@@ -122,6 +131,7 @@ mod tests {
         assert!(config.eq_preset.is_none());
         assert!(config.sample_rate.is_none());
         assert_eq!(config.buffer_ms, 200);
+        assert_eq!(config.replaygain, "track");
         assert!(config.custom_eq_presets.is_empty());
     }
 
@@ -134,6 +144,7 @@ mod tests {
             eq_preset: Some("Rock".to_string()),
             sample_rate: Some(48000),
             buffer_ms: 300,
+            replaygain: "album".to_string(),
             custom_eq_presets: vec![CustomEqPreset {
                 name: "Test".to_string(),
                 gains: [1.0, 2.0, 3.0, 4.0, 5.0, -1.0, -2.0, -3.0, -4.0, -5.0],
@@ -149,6 +160,7 @@ mod tests {
         assert_eq!(loaded.eq_preset, config.eq_preset);
         assert_eq!(loaded.sample_rate, config.sample_rate);
         assert_eq!(loaded.buffer_ms, config.buffer_ms);
+        assert_eq!(loaded.replaygain, config.replaygain);
         assert_eq!(loaded.custom_eq_presets.len(), 1);
         assert_eq!(loaded.custom_eq_presets[0].name, "Test");
         assert_eq!(
