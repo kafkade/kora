@@ -9,6 +9,7 @@ use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
@@ -101,10 +102,11 @@ fn run_loop(
     let save_interval = Duration::from_secs(30);
     let mut last_save = Instant::now();
     let mut file_browser: Option<FileBrowser> = None;
+    let mut show_eq = false;
 
     loop {
         // Draw
-        terminal.draw(|frame| draw(frame, player, theme, file_browser.as_ref()))?;
+        terminal.draw(|frame| draw(frame, player, theme, file_browser.as_ref(), show_eq))?;
 
         // Tick sleep timer
         if let SleepAction::Stop = player.tick_sleep_timer() {
@@ -173,6 +175,41 @@ fn run_loop(
                 continue;
             }
 
+            // EQ view input handling
+            if show_eq {
+                let cmd = match key.code {
+                    KeyCode::Esc => {
+                        show_eq = false;
+                        None
+                    }
+                    KeyCode::Char('e') => Some(PlayerCommand::CycleEqPreset),
+                    KeyCode::Char('h') | KeyCode::Left => Some(PlayerCommand::EqBandLeft),
+                    KeyCode::Char('l') | KeyCode::Right => Some(PlayerCommand::EqBandRight),
+                    KeyCode::Char('k') | KeyCode::Up => Some(PlayerCommand::EqBandUp),
+                    KeyCode::Char('j') | KeyCode::Down => Some(PlayerCommand::EqBandDown),
+                    // Playback keys still work in EQ view
+                    KeyCode::Char(' ') => Some(PlayerCommand::PlayPause),
+                    KeyCode::Char('n') => Some(PlayerCommand::NextTrack),
+                    KeyCode::Char('p') => Some(PlayerCommand::PrevTrack),
+                    KeyCode::Char('+') | KeyCode::Char('=') => Some(PlayerCommand::VolumeUp),
+                    KeyCode::Char('-') => Some(PlayerCommand::VolumeDown),
+                    KeyCode::Char('q') => Some(PlayerCommand::Quit),
+                    _ => None,
+                };
+
+                if let Some(cmd) = cmd {
+                    let action = player.handle_command(cmd);
+                    if matches!(action, PlayerAction::Quit) {
+                        if let Err(e) = player.save_session() {
+                            tracing::warn!("Failed to save session on quit: {e}");
+                        }
+                        return Ok(());
+                    }
+                    handle_action(action, player, playback_handle)?;
+                }
+                continue;
+            }
+
             let cmd = match key.code {
                 KeyCode::Char(' ') => Some(PlayerCommand::PlayPause),
                 KeyCode::Char('s') => Some(PlayerCommand::Stop),
@@ -183,6 +220,10 @@ fn run_loop(
                 KeyCode::Left => Some(PlayerCommand::SeekBackward(Duration::from_secs(5))),
                 KeyCode::Char('+') | KeyCode::Char('=') => Some(PlayerCommand::VolumeUp),
                 KeyCode::Char('-') => Some(PlayerCommand::VolumeDown),
+                KeyCode::Char('e') => {
+                    show_eq = true;
+                    None
+                }
                 KeyCode::Char('t') => {
                     *theme_index = (*theme_index + 1) % themes.len();
                     *theme = themes[*theme_index].clone();
@@ -239,21 +280,33 @@ fn handle_action(
     Ok(())
 }
 
-fn draw(frame: &mut Frame, player: &Player, theme: &Theme, file_browser: Option<&FileBrowser>) {
+fn draw(
+    frame: &mut Frame,
+    player: &Player,
+    theme: &Theme,
+    file_browser: Option<&FileBrowser>,
+    show_eq: bool,
+) {
     let area = frame.area();
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(5), // Track info + progress
-            Constraint::Min(3),    // Playlist
+            Constraint::Min(3),    // Playlist or EQ view
             Constraint::Length(1), // Status bar
         ])
         .split(area);
 
     draw_track_info(frame, chunks[0], player, theme);
-    draw_playlist(frame, chunks[1], player, theme);
-    draw_status_bar(frame, chunks[2], player, theme);
+
+    if show_eq {
+        draw_eq_view(frame, chunks[1], player, theme);
+        draw_eq_status_bar(frame, chunks[2], player, theme);
+    } else {
+        draw_playlist(frame, chunks[1], player, theme);
+        draw_status_bar(frame, chunks[2], player, theme);
+    }
 
     // File browser overlay
     if let Some(browser) = file_browser {
@@ -332,10 +385,7 @@ fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
         PlaybackState::Stopped => ("■ Stopped", theme.status_stopped),
     };
 
-    let eq_info = player
-        .eq_preset_name()
-        .map(|n| format!("  EQ: {n}"))
-        .unwrap_or_default();
+    let eq_info = format!("  EQ: {}", player.eq_display_name());
 
     let shuffle_info = if player.shuffle() {
         "  Shuffle: On"
@@ -406,6 +456,8 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
         Span::styled(":Vol ", theme.help_text),
         Span::styled("←/→", theme.help_key),
         Span::styled(":Seek ", theme.help_text),
+        Span::styled("e", theme.help_key),
+        Span::styled(":EQ ", theme.help_text),
         Span::styled("t", theme.help_key),
         Span::styled(":Theme ", theme.help_text),
         Span::styled("o", theme.help_key),
@@ -443,6 +495,188 @@ fn format_duration(d: Duration) -> String {
     let mins = total_secs / 60;
     let secs = total_secs % 60;
     format!("{mins}:{secs:02}")
+}
+
+fn draw_eq_view(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border)
+        .title(format!(" EQ: {} ", player.eq_display_name()))
+        .title_style(theme.title);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 4 || inner.width < 40 {
+        let msg = Paragraph::new(Line::from(Span::styled(
+            "  (terminal too small for EQ view)",
+            theme.status_info,
+        )));
+        frame.render_widget(msg, inner);
+        return;
+    }
+
+    let gains = player.eq_gains();
+    let selected = player.eq_selected_band();
+    let labels = [
+        "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k",
+    ];
+
+    // Layout: leave 1 row for frequency labels at bottom, 1 row for gain value at top
+    let chart_height = inner.height.saturating_sub(2) as i32;
+    if chart_height < 2 {
+        return;
+    }
+
+    // Scale: map -12..+12 dB to the chart height
+    let half = chart_height / 2;
+    let zero_row = half as u16; // row index of the 0dB line (from top of chart area)
+
+    // Chart area starts 1 row below inner.y (for the gain value display row)
+    let chart_y = inner.y + 1;
+    let label_y = chart_y + chart_height as u16;
+
+    // Calculate band width and spacing
+    let band_count = 10u16;
+    let total_width = inner.width;
+    let band_width = (total_width / band_count).max(1);
+
+    // Draw gain value header for selected band
+    let gain_val = gains[selected];
+    let gain_text = format!("{:+.0}dB", gain_val);
+    let gain_x = inner.x + selected as u16 * band_width + band_width / 2;
+    let gain_x = gain_x.saturating_sub(gain_text.len() as u16 / 2);
+    let gain_span = Span::styled(
+        gain_text,
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    );
+    if gain_x < inner.x + inner.width {
+        frame.render_widget(
+            Paragraph::new(Line::from(gain_span)),
+            Rect::new(gain_x, inner.y, (inner.x + inner.width - gain_x).min(6), 1),
+        );
+    }
+
+    // Draw the zero line
+    for x in 0..total_width {
+        let abs_x = inner.x + x;
+        let abs_y = chart_y + zero_row;
+        if abs_y < label_y {
+            let buf = frame.buffer_mut();
+            if abs_x < inner.x + inner.width {
+                buf[(abs_x, abs_y)]
+                    .set_char('─')
+                    .set_style(Style::default().fg(theme.dim));
+            }
+        }
+    }
+
+    // Draw each band bar
+    for (i, &gain) in gains.iter().enumerate() {
+        let bar_x = inner.x + i as u16 * band_width;
+        let is_selected = i == selected;
+        let bar_style = if is_selected {
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.dim)
+        };
+
+        // Map gain to rows: each row = 12/half dB
+        let db_per_row = if half > 0 { 12.0 / half as f32 } else { 1.0 };
+        let bar_rows = (gain.abs() / db_per_row).round() as i32;
+        let bar_rows = bar_rows.min(half);
+
+        if gain >= 0.0 {
+            // Draw upward from zero line
+            for r in 0..bar_rows {
+                let y = chart_y + zero_row - 1 - r as u16;
+                if y >= chart_y {
+                    draw_bar_cell(frame, bar_x, y, band_width, bar_style, inner);
+                }
+            }
+        } else {
+            // Draw downward from zero line
+            for r in 0..bar_rows {
+                let y = chart_y + zero_row + 1 + r as u16;
+                if y < label_y {
+                    draw_bar_cell(frame, bar_x, y, band_width, bar_style, inner);
+                }
+            }
+        }
+
+        // Draw frequency label
+        if label_y < inner.y + inner.height {
+            let label = labels[i];
+            let lx = bar_x + band_width / 2;
+            let lx = lx.saturating_sub(label.len() as u16 / 2);
+            let available = (inner.x + inner.width).saturating_sub(lx);
+            if available > 0 {
+                let label_style = if is_selected {
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.dim)
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(label, label_style))),
+                    Rect::new(lx, label_y, available.min(label.len() as u16), 1),
+                );
+            }
+        }
+    }
+}
+
+fn draw_bar_cell(frame: &mut Frame, x: u16, y: u16, band_width: u16, style: Style, inner: Rect) {
+    // Draw a bar cell with block chars, leaving 1 char padding on each side
+    let start = x + 1;
+    let end = (x + band_width).saturating_sub(1);
+    let buf = frame.buffer_mut();
+    for bx in start..end {
+        if bx < inner.x + inner.width {
+            buf[(bx, y)].set_char('█').set_style(style);
+        }
+    }
+}
+
+fn draw_eq_status_bar(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) {
+    let mut spans = vec![
+        Span::styled("e", theme.help_key),
+        Span::styled(":Preset ", theme.help_text),
+        Span::styled("h/l", theme.help_key),
+        Span::styled(":Band ", theme.help_text),
+        Span::styled("j/k", theme.help_key),
+        Span::styled(":Gain ", theme.help_text),
+        Span::styled("Esc", theme.help_key),
+        Span::styled(":Close ", theme.help_text),
+        Span::styled("Spc", theme.help_key),
+        Span::styled(":Play/Pause ", theme.help_text),
+        Span::styled("n/p", theme.help_key),
+        Span::styled(":Next/Prev ", theme.help_text),
+        Span::styled("+/-", theme.help_key),
+        Span::styled(":Vol ", theme.help_text),
+        Span::styled("q", theme.help_key),
+        Span::styled(":Quit", theme.help_text),
+    ];
+
+    if let Some(remaining) = player.sleep_remaining() {
+        let sleep_text = if player.is_sleep_fading() {
+            " | Sleep: fading...".to_string()
+        } else {
+            let total_secs = remaining.as_secs();
+            let mins = total_secs / 60;
+            let secs = total_secs % 60;
+            format!(" | Sleep: {mins}:{secs:02}")
+        };
+        spans.push(Span::styled(sleep_text, theme.status_info));
+    }
+
+    let help = Line::from(spans);
+    frame.render_widget(Paragraph::new(help), area);
 }
 
 fn draw_file_browser(frame: &mut Frame, area: Rect, browser: &FileBrowser, theme: &Theme) {

@@ -66,6 +66,12 @@ MP3, FLAC, OGG Vorbis, Opus, WAV — decoded natively in Rust via [symphonia](ht
 
 ## Install
 
+### From crates.io
+
+```sh
+cargo install kora-player
+```
+
 ### From source
 
 ```sh

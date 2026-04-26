@@ -19,3 +19,15 @@
 
 # Ring buffer size in milliseconds (50-500, higher = more latency but fewer underruns)
 # buffer_ms = 200
+
+# Custom EQ presets (in addition to built-in ones)
+# Each preset has a name and 10 band gains in dB (-12 to +12)
+# Bands: 31Hz, 62Hz, 125Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 16kHz
+#
+# [[custom_eq_presets]]
+# name = "My Preset"
+# gains = [0.0, 0.0, 2.0, 4.0, 3.0, 0.0, -1.0, 0.0, 2.0, 3.0]
+#
+# [[custom_eq_presets]]
+# name = "Late Night"
+# gains = [-4.0, -2.0, 0.0, 2.0, 4.0, 4.0, 2.0, 0.0, -2.0, -4.0]

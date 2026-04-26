@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Favorites persisted in `favorites.toml`
 - Sleep timer: press `Shift+S` to cycle presets (15/30/45/60/90 minutes), countdown shown in status bar
 - Sleep timer fades volume over the last 30 seconds before stopping playback
+- Interactive EQ view: press `e` to toggle, `h`/`l` to select band, `j`/`k` to adjust gain ±1dB
+- Visual EQ display with vertical bars per band, selected band highlighted
+- Preset cycling within EQ view, display shows "Custom" when gains are manually adjusted
+- Custom EQ presets definable in `config.toml`
+
+### Changed
+
+- Crate published as `kora-player` on crates.io (binary is still `kora`). Install with `cargo install kora-player`
 
 ## [0.2.0] - 2026-04-26
 

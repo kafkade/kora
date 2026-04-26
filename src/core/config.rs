@@ -5,6 +5,13 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+/// A user-defined EQ preset stored in config.toml.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomEqPreset {
+    pub name: String,
+    pub gains: [f32; 10],
+}
+
 /// Application configuration loaded from `config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -21,6 +28,9 @@ pub struct KoraConfig {
     pub sample_rate: Option<u32>,
     /// Ring buffer size in milliseconds (50–500).
     pub buffer_ms: u32,
+    /// Custom EQ presets (in addition to built-in ones).
+    #[serde(default)]
+    pub custom_eq_presets: Vec<CustomEqPreset>,
 }
 
 impl Default for KoraConfig {
@@ -32,6 +42,7 @@ impl Default for KoraConfig {
             eq_preset: None,
             sample_rate: None,
             buffer_ms: 200,
+            custom_eq_presets: Vec::new(),
         }
     }
 }
@@ -81,6 +92,19 @@ impl KoraConfig {
                 self.buffer_ms
             );
         }
+        for preset in &self.custom_eq_presets {
+            if preset.name.is_empty() {
+                bail!("Custom EQ preset name must not be empty");
+            }
+            for &gain in &preset.gains {
+                if !(-12.0..=12.0).contains(&gain) {
+                    bail!(
+                        "Custom EQ preset '{}' has out-of-range gain: {gain} (must be -12..+12)",
+                        preset.name
+                    );
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -98,6 +122,7 @@ mod tests {
         assert!(config.eq_preset.is_none());
         assert!(config.sample_rate.is_none());
         assert_eq!(config.buffer_ms, 200);
+        assert!(config.custom_eq_presets.is_empty());
     }
 
     #[test]
@@ -109,6 +134,10 @@ mod tests {
             eq_preset: Some("Rock".to_string()),
             sample_rate: Some(48000),
             buffer_ms: 300,
+            custom_eq_presets: vec![CustomEqPreset {
+                name: "Test".to_string(),
+                gains: [1.0, 2.0, 3.0, 4.0, 5.0, -1.0, -2.0, -3.0, -4.0, -5.0],
+            }],
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -120,6 +149,12 @@ mod tests {
         assert_eq!(loaded.eq_preset, config.eq_preset);
         assert_eq!(loaded.sample_rate, config.sample_rate);
         assert_eq!(loaded.buffer_ms, config.buffer_ms);
+        assert_eq!(loaded.custom_eq_presets.len(), 1);
+        assert_eq!(loaded.custom_eq_presets[0].name, "Test");
+        assert_eq!(
+            loaded.custom_eq_presets[0].gains,
+            config.custom_eq_presets[0].gains
+        );
     }
 
     #[test]
@@ -225,5 +260,42 @@ mod tests {
         assert!(config.music_dir.is_none());
         assert!(config.eq_preset.is_none());
         assert_eq!(config.buffer_ms, 200);
+        assert!(config.custom_eq_presets.is_empty());
+    }
+
+    #[test]
+    fn validate_custom_eq_preset_out_of_range() {
+        let config = KoraConfig {
+            custom_eq_presets: vec![CustomEqPreset {
+                name: "Bad".to_string(),
+                gains: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 15.0],
+            }],
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_custom_eq_preset_empty_name() {
+        let config = KoraConfig {
+            custom_eq_presets: vec![CustomEqPreset {
+                name: String::new(),
+                gains: [0.0; 10],
+            }],
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn custom_eq_preset_from_toml() {
+        let toml_str = r#"
+            [[custom_eq_presets]]
+            name = "My Preset"
+            gains = [0.0, 1.0, 2.0, 3.0, 4.0, -1.0, -2.0, 0.0, 1.0, 2.0]
+        "#;
+        let config: KoraConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.custom_eq_presets.len(), 1);
+        assert_eq!(config.custom_eq_presets[0].name, "My Preset");
     }
 }
