@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Shuffle mode: press `z` to toggle shuffle (Fisher-Yates), shuffled order respected by next/prev
+- Repeat modes: press `r` to cycle Off → All → One
+- Shuffle and repeat state displayed in TUI status bar and persisted in session
+- Favorites: press `f` to star/unstar tracks, ★ indicator in playlist and track info
+- Favorites persisted in `favorites.toml`
+- Sleep timer: press `Shift+S` to cycle presets (15/30/45/60/90 minutes), countdown shown in status bar
+- Sleep timer fades volume over the last 30 seconds before stopping playback
+
 ## [0.2.0] - 2026-04-26
 
 ### Added

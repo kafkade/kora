@@ -14,6 +14,10 @@ pub struct Session {
     pub queue_index: usize,
     pub volume_db: f32,
     pub eq_preset: Option<String>,
+    #[serde(default)]
+    pub shuffle: bool,
+    #[serde(default)]
+    pub repeat: String,
 }
 
 impl Session {
@@ -90,6 +94,8 @@ mod tests {
             queue_index: 1,
             volume_db: -3.0,
             eq_preset: Some("Rock".to_string()),
+            shuffle: true,
+            repeat: "All".to_string(),
         };
 
         session.save(&path).unwrap();

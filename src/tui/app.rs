@@ -17,7 +17,7 @@ use super::file_browser::FileBrowser;
 use super::theme::{self, Theme};
 use crate::core::session::Session;
 use crate::core::track::Track;
-use crate::playback::player::{PlaybackState, Player, PlayerAction, PlayerCommand};
+use crate::playback::player::{PlaybackState, Player, PlayerAction, PlayerCommand, SleepAction};
 
 /// Run the TUI application.
 #[allow(dead_code)]
@@ -106,6 +106,12 @@ fn run_loop(
         // Draw
         terminal.draw(|frame| draw(frame, player, theme, file_browser.as_ref()))?;
 
+        // Tick sleep timer
+        if let SleepAction::Stop = player.tick_sleep_timer() {
+            let action = player.handle_command(PlayerCommand::Stop);
+            handle_action(action, player, playback_handle)?;
+        }
+
         // Check if playback thread finished (track ended naturally)
         if let Some(handle) = playback_handle.as_ref()
             && handle.is_finished()
@@ -190,6 +196,10 @@ fn run_loop(
                     file_browser = Some(FileBrowser::new(start_dir));
                     None
                 }
+                KeyCode::Char('f') => Some(PlayerCommand::ToggleFavorite),
+                KeyCode::Char('z') => Some(PlayerCommand::ToggleShuffle),
+                KeyCode::Char('r') => Some(PlayerCommand::CycleRepeat),
+                KeyCode::Char('S') => Some(PlayerCommand::CycleSleepTimer),
                 _ => None,
             };
 
@@ -283,6 +293,14 @@ fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
             theme.track_position,
         ),
         Span::styled(track_name, theme.track_title),
+        Span::styled(
+            if player.is_current_favorited() {
+                " ★"
+            } else {
+                ""
+            },
+            theme.track_title,
+        ),
     ]);
     frame.render_widget(Paragraph::new(track_line), chunks[0]);
 
@@ -319,11 +337,19 @@ fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
         .map(|n| format!("  EQ: {n}"))
         .unwrap_or_default();
 
+    let shuffle_info = if player.shuffle() {
+        "  Shuffle: On"
+    } else {
+        "  Shuffle: Off"
+    };
+
+    let repeat_info = format!("  Repeat: {}", player.repeat());
+
     let status = Line::from(vec![
         Span::styled(state_icon, state_style),
         Span::styled(
             format!(
-                "  Vol: {:+.0}dB{eq_info}  Theme: {}",
+                "  Vol: {:+.0}dB{eq_info}{shuffle_info}{repeat_info}  Theme: {}",
                 player.volume_db(),
                 theme.name
             ),
@@ -347,13 +373,18 @@ fn draw_playlist(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) 
         .map(|(i, track)| {
             let is_current = i == player.current_index();
             let prefix = if is_current { "▶ " } else { "  " };
+            let fav = if player.favorites().contains(&track.path_string()) {
+                " ★"
+            } else {
+                ""
+            };
             let style = if is_current {
                 theme.playlist_current
             } else {
                 theme.playlist_normal
             };
             ListItem::new(Line::from(Span::styled(
-                format!("{prefix}{}. {}", i + 1, track.display_name()),
+                format!("{prefix}{}. {}{fav}", i + 1, track.display_name()),
                 style,
             )))
         })
@@ -363,8 +394,8 @@ fn draw_playlist(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) 
     frame.render_widget(list, area);
 }
 
-fn draw_status_bar(frame: &mut Frame, area: Rect, _player: &Player, theme: &Theme) {
-    let help = Line::from(vec![
+fn draw_status_bar(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) {
+    let mut spans = vec![
         Span::styled("Spc", theme.help_key),
         Span::styled(":Play/Pause ", theme.help_text),
         Span::styled("n/p", theme.help_key),
@@ -379,9 +410,31 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, _player: &Player, theme: &Them
         Span::styled(":Theme ", theme.help_text),
         Span::styled("o", theme.help_key),
         Span::styled(":Browse ", theme.help_text),
+        Span::styled("f", theme.help_key),
+        Span::styled(":Fav ", theme.help_text),
+        Span::styled("z", theme.help_key),
+        Span::styled(":Shuffle ", theme.help_text),
+        Span::styled("r", theme.help_key),
+        Span::styled(":Repeat ", theme.help_text),
+        Span::styled("S", theme.help_key),
+        Span::styled(":Sleep ", theme.help_text),
         Span::styled("q", theme.help_key),
         Span::styled(":Quit", theme.help_text),
-    ]);
+    ];
+
+    if let Some(remaining) = player.sleep_remaining() {
+        let sleep_text = if player.is_sleep_fading() {
+            " | Sleep: fading...".to_string()
+        } else {
+            let total_secs = remaining.as_secs();
+            let mins = total_secs / 60;
+            let secs = total_secs % 60;
+            format!(" | Sleep: {mins}:{secs:02}")
+        };
+        spans.push(Span::styled(sleep_text, theme.status_info));
+    }
+
+    let help = Line::from(spans);
     frame.render_widget(Paragraph::new(help), area);
 }
 
