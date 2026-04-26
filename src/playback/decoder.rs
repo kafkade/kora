@@ -41,7 +41,18 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
             &FormatOptions::default(),
             &MetadataOptions::default(),
         )
-        .with_context(|| format!("Unsupported or corrupt audio file: {}", path.display()))?;
+        .with_context(|| {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext.eq_ignore_ascii_case("wma") {
+                format!(
+                    "Cannot decode {}: WMA files require ffmpeg. \
+                     Install ffmpeg and ensure it's in your PATH.",
+                    path.display()
+                )
+            } else {
+                format!("Unsupported or corrupt audio file: {}", path.display())
+            }
+        })?;
 
     let mut format = probed.format;
 
@@ -248,5 +259,25 @@ mod tests {
         assert!(result.is_err(), "Large garbage file should fail to decode");
 
         std::fs::remove_file(&large_garbage).ok();
+    }
+
+    #[test]
+    fn decode_wma_file_shows_ffmpeg_hint() {
+        let dir = std::env::temp_dir().join("kora_test_decode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let wma_file = dir.join("test.wma");
+        let mut f = File::create(&wma_file).unwrap();
+        f.write_all(&[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11])
+            .unwrap();
+
+        let result = decode_file(&wma_file);
+        assert!(result.is_err());
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("ffmpeg"),
+            "WMA error should mention ffmpeg: {err}"
+        );
+
+        std::fs::remove_file(&wma_file).ok();
     }
 }

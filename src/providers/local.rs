@@ -63,3 +63,35 @@ fn is_audio_file(path: &Path) -> bool {
         .map(|e| SUPPORTED_EXTENSIONS.contains(&e.to_lowercase().as_str()))
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supported_extensions_include_aac_m4a() {
+        assert!(
+            SUPPORTED_EXTENSIONS.contains(&"aac"),
+            "SUPPORTED_EXTENSIONS must include aac"
+        );
+        assert!(
+            SUPPORTED_EXTENSIONS.contains(&"m4a"),
+            "SUPPORTED_EXTENSIONS must include m4a"
+        );
+    }
+
+    #[test]
+    fn is_audio_file_accepts_m4a() {
+        assert!(is_audio_file(Path::new("song.m4a")));
+    }
+
+    #[test]
+    fn is_audio_file_accepts_aac() {
+        assert!(is_audio_file(Path::new("song.aac")));
+    }
+
+    #[test]
+    fn is_audio_file_rejects_txt() {
+        assert!(!is_audio_file(Path::new("readme.txt")));
+    }
+}

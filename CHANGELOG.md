@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audio output device selection: `--list-devices` to list, `--device <NAME>` to select, press `d` to cycle in TUI
 - Default audio device configurable via `audio_device` in `config.toml`
 - Graceful fallback to default device when configured device is disconnected
+- Synced lyrics display: press `y` to toggle, auto-scrolling with current line highlighted
+- Lyrics loaded from `.lrc` sidecar files or embedded tags (ID3v2 USLT, Vorbis LYRICS)
+- AAC and ALAC (M4A) format support via symphonia
+- Helpful error message when attempting to play WMA files (requires ffmpeg)
 
 ### Changed
 

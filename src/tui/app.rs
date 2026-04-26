@@ -20,6 +20,7 @@ use super::file_browser::FileBrowser;
 use super::theme::{self, Theme};
 use crate::core::session::Session;
 use crate::core::track::Track;
+use crate::playback::lyrics;
 use crate::playback::player::{PlaybackState, Player, PlayerAction, PlayerCommand, SleepAction};
 
 /// Block characters for fine-grained bar height rendering (1/8 increments).
@@ -116,6 +117,7 @@ fn run_loop(
     let mut last_save = Instant::now();
     let mut file_browser: Option<FileBrowser> = None;
     let mut show_eq = false;
+    let mut show_lyrics = false;
     let mut visualizer_mode = VisualizerMode::Normal;
     let mut status_message: Option<(String, Instant)> = None;
 
@@ -132,6 +134,7 @@ fn run_loop(
                 theme,
                 file_browser.as_ref(),
                 show_eq,
+                show_lyrics,
                 visualizer_mode,
                 status_message.as_ref().map(|(msg, _)| msg.as_str()),
             )
@@ -392,6 +395,10 @@ fn run_loop(
                     };
                     None
                 }
+                KeyCode::Char('y') => {
+                    show_lyrics = !show_lyrics;
+                    None
+                }
                 _ => None,
             };
 
@@ -476,12 +483,14 @@ fn handle_action(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw(
     frame: &mut Frame,
     player: &Player,
     theme: &Theme,
     file_browser: Option<&FileBrowser>,
     show_eq: bool,
+    show_lyrics: bool,
     visualizer_mode: VisualizerMode,
     status_message: Option<&str>,
 ) {
@@ -502,11 +511,25 @@ fn draw(
         draw_eq_view(frame, chunks[1], player, theme);
         draw_eq_status_bar(frame, chunks[2], player, theme);
     } else {
-        match visualizer_mode {
-            VisualizerMode::Fullscreen => {
+        match (visualizer_mode, show_lyrics) {
+            (VisualizerMode::Fullscreen, _) => {
                 draw_visualizer(frame, chunks[1], player, theme);
             }
-            VisualizerMode::Normal => {
+            (VisualizerMode::Normal, true) => {
+                // Visualizer + lyrics: split right panel between playlist, lyrics, visualizer
+                let middle = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(40), // Playlist
+                        Constraint::Percentage(35), // Lyrics
+                        Constraint::Percentage(25), // Visualizer
+                    ])
+                    .split(chunks[1]);
+                draw_playlist(frame, middle[0], player, theme);
+                draw_lyrics(frame, middle[1], player, theme);
+                draw_visualizer(frame, middle[2], player, theme);
+            }
+            (VisualizerMode::Normal, false) => {
                 let middle = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
@@ -517,7 +540,19 @@ fn draw(
                 draw_playlist(frame, middle[0], player, theme);
                 draw_visualizer(frame, middle[1], player, theme);
             }
-            VisualizerMode::Off => {
+            (VisualizerMode::Off, true) => {
+                // Lyrics replace the right side
+                let middle = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(50), // Playlist
+                        Constraint::Percentage(50), // Lyrics
+                    ])
+                    .split(chunks[1]);
+                draw_playlist(frame, middle[0], player, theme);
+                draw_lyrics(frame, middle[1], player, theme);
+            }
+            (VisualizerMode::Off, false) => {
                 draw_playlist(frame, chunks[1], player, theme);
             }
         }
@@ -681,6 +716,71 @@ fn draw_playlist(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) 
     frame.render_widget(list, area);
 }
 
+fn draw_lyrics(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border)
+        .title(" Lyrics ")
+        .title_style(theme.title);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let current_lyrics = player.lyrics();
+    if current_lyrics.lines.is_empty() {
+        let msg = Paragraph::new(Line::from(Span::styled(
+            "  No lyrics found",
+            Style::default().fg(theme.dim),
+        )));
+        frame.render_widget(msg, inner);
+        return;
+    }
+
+    let position_ms = player.current_position().as_millis() as u64;
+    let current_idx = lyrics::current_line_index(current_lyrics, position_ms);
+
+    let visible_lines = inner.height as usize;
+    if visible_lines == 0 {
+        return;
+    }
+
+    let total = current_lyrics.lines.len();
+    let center = current_idx.unwrap_or(0);
+    let half = visible_lines / 2;
+    let start = center.saturating_sub(half);
+    let end = (start + visible_lines).min(total);
+    // Adjust start if we're near the end
+    let start = if end == total {
+        total.saturating_sub(visible_lines)
+    } else {
+        start
+    };
+
+    let lines: Vec<Line> = current_lyrics.lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, lyric)| {
+            let abs_idx = start + i;
+            let style = match current_idx {
+                Some(cur) if abs_idx == cur => Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+                Some(cur) if abs_idx < cur => Style::default().fg(theme.dim),
+                _ => Style::default().fg(theme.fg),
+            };
+            let text = if lyric.text.is_empty() {
+                "♪".to_string()
+            } else {
+                lyric.text.clone()
+            };
+            Line::from(Span::styled(format!(" {text}"), style))
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
 fn draw_status_bar(
     frame: &mut Frame,
     area: Rect,
@@ -713,6 +813,8 @@ fn draw_status_bar(
         Span::styled(":Repeat ", theme.help_text),
         Span::styled("v/V", theme.help_key),
         Span::styled(":Viz ", theme.help_text),
+        Span::styled("y", theme.help_key),
+        Span::styled(":Lyrics ", theme.help_text),
         Span::styled("[/]", theme.help_key),
         Span::styled(":Speed ", theme.help_text),
         Span::styled("S", theme.help_key),
