@@ -99,7 +99,7 @@ jobs:
 
       - name: Extract release notes from CHANGELOG.md
         id: extract
-        uses: ffurrer2/extract-release-notes@v2
+        uses: ffurrer2/extract-release-notes@v3
 
       - name: Determine pre-release status
         id: prerelease
