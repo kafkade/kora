@@ -7,11 +7,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
 use crate::backend::cpal_backend;
+use crate::core::favorites::Favorites;
 use crate::core::session::Session;
 use crate::core::track::{Track, TrackSource};
 use crate::core::types::Volume;
@@ -27,6 +28,36 @@ pub enum PlaybackState {
     Stopped,
 }
 
+/// Repeat mode for the playback queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepeatMode {
+    #[default]
+    Off,
+    All,
+    One,
+}
+
+impl RepeatMode {
+    /// Cycle to the next repeat mode: Off → All → One → Off.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::All,
+            Self::All => Self::One,
+            Self::One => Self::Off,
+        }
+    }
+}
+
+impl std::fmt::Display for RepeatMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => write!(f, "Off"),
+            Self::All => write!(f, "All"),
+            Self::One => write!(f, "One"),
+        }
+    }
+}
+
 /// Commands sent from the TUI to the playback controller.
 pub enum PlayerCommand {
     PlayPause,
@@ -39,7 +70,40 @@ pub enum PlayerCommand {
     SeekBackward(Duration),
     VolumeUp,
     VolumeDown,
+    ToggleShuffle,
+    CycleRepeat,
+    ToggleFavorite,
+    #[allow(dead_code)]
+    SetSleepTimer(u64),
+    #[allow(dead_code)]
+    CancelSleepTimer,
+    CycleSleepTimer,
     Quit,
+}
+
+/// Duration of the fade-out before the sleep timer stops playback.
+const FADE_DURATION: Duration = Duration::from_secs(30);
+
+/// Preset durations (in minutes) for the sleep timer cycle.
+const SLEEP_PRESETS: [u64; 5] = [15, 30, 45, 60, 90];
+
+/// Sleep timer configuration for automatic stop after a duration.
+#[derive(Debug)]
+pub struct SleepTimer {
+    pub end_time: Instant,
+    pub total_duration: Duration,
+    pub fade_started: bool,
+    pub original_volume_db: f32,
+}
+
+/// Result of ticking the sleep timer each frame.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum SleepAction {
+    None,
+    Active(u64),
+    Fading(u64),
+    Stop,
 }
 
 /// Shared playback position updated by the producer thread.
@@ -55,6 +119,9 @@ pub struct Player {
     volume: Volume,
     state: PlaybackState,
     eq_preset: Option<&'static EqPreset>,
+    shuffle: bool,
+    repeat: RepeatMode,
+    shuffle_order: Vec<usize>,
 
     // Current track playback
     current_samples: Option<Vec<f32>>,
@@ -64,6 +131,9 @@ pub struct Player {
     playback_position: Duration,
     playback_start: Option<Instant>,
     pause_offset: Duration,
+
+    favorites: Favorites,
+    sleep_timer: Option<SleepTimer>,
 
     stop_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
@@ -86,12 +156,20 @@ impl Player {
 
         let initial_linear = Volume(volume_db).as_linear();
 
+        let favorites = Favorites::load().unwrap_or_else(|e| {
+            tracing::warn!("Failed to load favorites: {e}");
+            Favorites::default()
+        });
+
         Ok(Self {
             tracks,
             current_index: 0,
             volume: Volume(volume_db),
             state: PlaybackState::Stopped,
             eq_preset: preset,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            shuffle_order: Vec::new(),
             current_samples: None,
             current_sample_rate: 44100,
             current_channels: 2,
@@ -99,6 +177,8 @@ impl Player {
             playback_position: Duration::ZERO,
             playback_start: None,
             pause_offset: Duration::ZERO,
+            favorites,
+            sleep_timer: None,
             stop_flag: Arc::new(AtomicBool::new(false)),
             pause_flag: Arc::new(AtomicBool::new(false)),
             shared_volume: Arc::new(AtomicU32::new(initial_linear.to_bits())),
@@ -220,8 +300,8 @@ impl Player {
             }
             PlayerCommand::NextTrack => {
                 self.stop_flag.store(true, Ordering::Relaxed);
-                if self.current_index + 1 < self.tracks.len() {
-                    self.current_index += 1;
+                if let Some(next) = self.next_index() {
+                    self.current_index = next;
                     PlayerAction::LoadAndPlay
                 } else {
                     self.state = PlaybackState::Stopped;
@@ -233,8 +313,10 @@ impl Player {
                 // If more than 3 seconds in, restart current track
                 if self.current_position().as_secs() > 3 || self.current_index == 0 {
                     PlayerAction::LoadAndPlay
+                } else if let Some(prev) = self.prev_index() {
+                    self.current_index = prev;
+                    PlayerAction::LoadAndPlay
                 } else {
-                    self.current_index -= 1;
                     PlayerAction::LoadAndPlay
                 }
             }
@@ -252,6 +334,85 @@ impl Player {
                 self.volume = Volume((self.volume.0 - 1.0).max(-30.0));
                 self.shared_volume
                     .store(self.volume.as_linear().to_bits(), Ordering::Relaxed);
+                PlayerAction::None
+            }
+            PlayerCommand::ToggleShuffle => {
+                self.shuffle = !self.shuffle;
+                if self.shuffle {
+                    self.shuffle_order = generate_shuffle_order(self.tracks.len());
+                }
+                PlayerAction::None
+            }
+            PlayerCommand::CycleRepeat => {
+                self.repeat = self.repeat.cycle();
+                PlayerAction::None
+            }
+            PlayerCommand::ToggleFavorite => {
+                if let Some(track) = self.current_track() {
+                    let key = track.path_string();
+                    let is_fav = self.favorites.toggle(&key);
+                    tracing::info!(
+                        "{} favorite: {key}",
+                        if is_fav { "Added" } else { "Removed" }
+                    );
+                    if let Err(e) = self.favorites.save() {
+                        tracing::warn!("Failed to save favorites: {e}");
+                    }
+                }
+                PlayerAction::None
+            }
+            PlayerCommand::SetSleepTimer(minutes) => {
+                let duration = Duration::from_secs(minutes * 60);
+                self.sleep_timer = Some(SleepTimer {
+                    end_time: Instant::now() + duration,
+                    total_duration: duration,
+                    fade_started: false,
+                    original_volume_db: self.volume.0,
+                });
+                PlayerAction::None
+            }
+            PlayerCommand::CancelSleepTimer => {
+                if let Some(ref timer) = self.sleep_timer
+                    && timer.fade_started
+                {
+                    self.shared_volume
+                        .store(self.volume.as_linear().to_bits(), Ordering::Relaxed);
+                }
+                self.sleep_timer = None;
+                PlayerAction::None
+            }
+            PlayerCommand::CycleSleepTimer => {
+                let (next_minutes, was_fading) = match &self.sleep_timer {
+                    None => (Some(SLEEP_PRESETS[0]), false),
+                    Some(timer) => {
+                        let current_minutes = timer.total_duration.as_secs() / 60;
+                        let next = SLEEP_PRESETS
+                            .iter()
+                            .position(|&p| p == current_minutes)
+                            .and_then(|idx| SLEEP_PRESETS.get(idx + 1).copied());
+                        (next, timer.fade_started)
+                    }
+                };
+
+                if was_fading {
+                    self.shared_volume
+                        .store(self.volume.as_linear().to_bits(), Ordering::Relaxed);
+                }
+
+                match next_minutes {
+                    Some(minutes) => {
+                        let duration = Duration::from_secs(minutes * 60);
+                        self.sleep_timer = Some(SleepTimer {
+                            end_time: Instant::now() + duration,
+                            total_duration: duration,
+                            fade_started: false,
+                            original_volume_db: self.volume.0,
+                        });
+                    }
+                    None => {
+                        self.sleep_timer = None;
+                    }
+                }
                 PlayerAction::None
             }
             PlayerCommand::Quit => PlayerAction::Quit,
@@ -308,8 +469,25 @@ impl Player {
 
     /// Called when playback thread finishes naturally (track ended).
     pub fn on_track_finished(&mut self) -> PlayerAction {
-        if self.state == PlaybackState::Playing && self.current_index + 1 < self.tracks.len() {
-            self.current_index += 1;
+        if self.state != PlaybackState::Playing {
+            self.state = PlaybackState::Stopped;
+            return PlayerAction::None;
+        }
+
+        if self.repeat == RepeatMode::One {
+            return PlayerAction::LoadAndPlay;
+        }
+
+        if let Some(next) = self.next_index() {
+            self.current_index = next;
+            PlayerAction::LoadAndPlay
+        } else if self.repeat == RepeatMode::All && !self.tracks.is_empty() {
+            // Wrap to beginning (or first in shuffle order)
+            self.current_index = if self.shuffle {
+                self.shuffle_order.first().copied().unwrap_or(0)
+            } else {
+                0
+            };
             PlayerAction::LoadAndPlay
         } else {
             self.state = PlaybackState::Stopped;
@@ -332,6 +510,74 @@ impl Player {
         self.current_index
     }
 
+    /// Whether shuffle is enabled.
+    pub fn shuffle(&self) -> bool {
+        self.shuffle
+    }
+
+    /// Current repeat mode.
+    pub fn repeat(&self) -> RepeatMode {
+        self.repeat
+    }
+
+    /// Return the next track index respecting shuffle order, or `None` at end.
+    fn next_index(&self) -> Option<usize> {
+        if self.tracks.is_empty() {
+            return None;
+        }
+        if self.shuffle && !self.shuffle_order.is_empty() {
+            let pos = self
+                .shuffle_order
+                .iter()
+                .position(|&i| i == self.current_index)
+                .unwrap_or(0);
+            if pos + 1 < self.shuffle_order.len() {
+                Some(self.shuffle_order[pos + 1])
+            } else {
+                None
+            }
+        } else if self.current_index + 1 < self.tracks.len() {
+            Some(self.current_index + 1)
+        } else {
+            None
+        }
+    }
+
+    /// Return the previous track index respecting shuffle order, or `None` at start.
+    fn prev_index(&self) -> Option<usize> {
+        if self.tracks.is_empty() {
+            return None;
+        }
+        if self.shuffle && !self.shuffle_order.is_empty() {
+            let pos = self
+                .shuffle_order
+                .iter()
+                .position(|&i| i == self.current_index)
+                .unwrap_or(0);
+            if pos > 0 {
+                Some(self.shuffle_order[pos - 1])
+            } else {
+                None
+            }
+        } else if self.current_index > 0 {
+            Some(self.current_index - 1)
+        } else {
+            None
+        }
+    }
+
+    /// Check whether the currently playing track is favorited.
+    pub fn is_current_favorited(&self) -> bool {
+        self.current_track()
+            .map(|t| self.favorites.contains(&t.path_string()))
+            .unwrap_or(false)
+    }
+
+    /// Get a reference to the favorites store.
+    pub fn favorites(&self) -> &Favorites {
+        &self.favorites
+    }
+
     /// Build a [`Session`] from current player state and save it to disk.
     pub fn save_session(&self) -> Result<()> {
         let session = Session {
@@ -341,6 +587,8 @@ impl Player {
             queue_index: self.current_index,
             volume_db: self.volume.0,
             eq_preset: self.eq_preset_name().map(|s| s.to_string()),
+            shuffle: self.shuffle,
+            repeat: self.repeat.to_string(),
         };
         session.save(&Session::session_path())
     }
@@ -358,6 +606,16 @@ impl Player {
             }
         }
 
+        self.shuffle = session.shuffle;
+        self.repeat = match session.repeat.as_str() {
+            "All" => RepeatMode::All,
+            "One" => RepeatMode::One,
+            _ => RepeatMode::Off,
+        };
+        if self.shuffle {
+            self.shuffle_order = generate_shuffle_order(self.tracks.len());
+        }
+
         if let Some(ref track_path) = session.track_path {
             if let Some(idx) = self
                 .tracks
@@ -373,6 +631,59 @@ impl Player {
         }
         false
     }
+
+    /// Tick the sleep timer. Call every frame from the TUI event loop.
+    pub fn tick_sleep_timer(&mut self) -> SleepAction {
+        let (end_time, original_volume_db) = match &self.sleep_timer {
+            Some(t) => (t.end_time, t.original_volume_db),
+            None => return SleepAction::None,
+        };
+
+        let now = Instant::now();
+        if now >= end_time {
+            // Timer expired — restore volume and clear
+            self.shared_volume
+                .store(self.volume.as_linear().to_bits(), Ordering::Relaxed);
+            self.sleep_timer = None;
+            return SleepAction::Stop;
+        }
+
+        let remaining = end_time - now;
+        let remaining_secs = remaining.as_secs();
+
+        if remaining < FADE_DURATION {
+            if let Some(ref mut timer) = self.sleep_timer {
+                timer.fade_started = true;
+            }
+
+            let fade_progress = 1.0 - (remaining.as_secs_f32() / FADE_DURATION.as_secs_f32());
+            let target_db = original_volume_db + (-30.0 - original_volume_db) * fade_progress;
+            let linear = 10.0_f32.powf(target_db / 20.0);
+            self.shared_volume
+                .store(linear.to_bits(), Ordering::Relaxed);
+
+            SleepAction::Fading(remaining_secs)
+        } else {
+            SleepAction::Active(remaining_secs)
+        }
+    }
+
+    /// Get remaining time on the sleep timer, if any.
+    pub fn sleep_remaining(&self) -> Option<Duration> {
+        self.sleep_timer.as_ref().map(|t| {
+            let now = Instant::now();
+            if now >= t.end_time {
+                Duration::ZERO
+            } else {
+                t.end_time - now
+            }
+        })
+    }
+
+    /// Whether the sleep timer is currently fading out.
+    pub fn is_sleep_fading(&self) -> bool {
+        self.sleep_timer.as_ref().is_some_and(|t| t.fade_started)
+    }
 }
 
 /// Action the TUI should take after handling a command.
@@ -380,4 +691,194 @@ pub enum PlayerAction {
     None,
     LoadAndPlay,
     Quit,
+}
+
+/// Generate a shuffled index order using a simple LCG PRNG.
+fn generate_shuffle_order(len: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    if len <= 1 {
+        return order;
+    }
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let mut rng = seed;
+    for i in (1..order.len()).rev() {
+        rng = rng
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let j = (rng as usize) % (i + 1);
+        order.swap(i, j);
+    }
+    order
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeat_mode_cycles_correctly() {
+        assert_eq!(RepeatMode::Off.cycle(), RepeatMode::All);
+        assert_eq!(RepeatMode::All.cycle(), RepeatMode::One);
+        assert_eq!(RepeatMode::One.cycle(), RepeatMode::Off);
+    }
+
+    #[test]
+    fn repeat_mode_display() {
+        assert_eq!(RepeatMode::Off.to_string(), "Off");
+        assert_eq!(RepeatMode::All.to_string(), "All");
+        assert_eq!(RepeatMode::One.to_string(), "One");
+    }
+
+    #[test]
+    fn shuffle_order_is_valid_permutation() {
+        let order = generate_shuffle_order(10);
+        assert_eq!(order.len(), 10);
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(sorted, (0..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn shuffle_order_empty_and_single() {
+        let empty = generate_shuffle_order(0);
+        assert!(empty.is_empty());
+
+        let single = generate_shuffle_order(1);
+        assert_eq!(single, vec![0]);
+    }
+
+    fn test_player() -> Player {
+        Player::new(vec![], 0.0, None).unwrap()
+    }
+
+    #[test]
+    fn sleep_timer_remaining_approximately_60s() {
+        let mut player = test_player();
+        player.handle_command(PlayerCommand::SetSleepTimer(1));
+        let remaining = player.sleep_remaining().expect("timer should be set");
+        assert!(
+            remaining.as_secs() >= 59 && remaining.as_secs() <= 60,
+            "expected ~60s, got {}s",
+            remaining.as_secs()
+        );
+    }
+
+    #[test]
+    fn tick_returns_active_when_timer_set() {
+        let mut player = test_player();
+        player.handle_command(PlayerCommand::SetSleepTimer(1));
+        match player.tick_sleep_timer() {
+            SleepAction::Active(secs) => assert!(secs >= 29, "expected >= 29s, got {secs}s"),
+            other => panic!("expected Active, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_returns_stop_when_timer_expired() {
+        let mut player = test_player();
+        player.sleep_timer = Some(SleepTimer {
+            end_time: Instant::now(),
+            total_duration: Duration::from_secs(60),
+            fade_started: false,
+            original_volume_db: 0.0,
+        });
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(matches!(player.tick_sleep_timer(), SleepAction::Stop));
+        assert!(player.sleep_timer.is_none());
+    }
+
+    #[test]
+    fn cancel_clears_timer() {
+        let mut player = test_player();
+        player.handle_command(PlayerCommand::SetSleepTimer(15));
+        assert!(player.sleep_timer.is_some());
+        player.handle_command(PlayerCommand::CancelSleepTimer);
+        assert!(player.sleep_timer.is_none());
+    }
+
+    #[test]
+    fn cycle_presets() {
+        let mut player = test_player();
+
+        // Off → 15
+        player.handle_command(PlayerCommand::CycleSleepTimer);
+        assert_eq!(
+            player.sleep_timer.as_ref().unwrap().total_duration,
+            Duration::from_secs(15 * 60)
+        );
+
+        // 15 → 30
+        player.handle_command(PlayerCommand::CycleSleepTimer);
+        assert_eq!(
+            player.sleep_timer.as_ref().unwrap().total_duration,
+            Duration::from_secs(30 * 60)
+        );
+
+        // 30 → 45
+        player.handle_command(PlayerCommand::CycleSleepTimer);
+        assert_eq!(
+            player.sleep_timer.as_ref().unwrap().total_duration,
+            Duration::from_secs(45 * 60)
+        );
+
+        // 45 → 60
+        player.handle_command(PlayerCommand::CycleSleepTimer);
+        assert_eq!(
+            player.sleep_timer.as_ref().unwrap().total_duration,
+            Duration::from_secs(60 * 60)
+        );
+
+        // 60 → 90
+        player.handle_command(PlayerCommand::CycleSleepTimer);
+        assert_eq!(
+            player.sleep_timer.as_ref().unwrap().total_duration,
+            Duration::from_secs(90 * 60)
+        );
+
+        // 90 → Off
+        player.handle_command(PlayerCommand::CycleSleepTimer);
+        assert!(player.sleep_timer.is_none());
+    }
+
+    #[test]
+    fn tick_returns_fading_in_last_30s() {
+        let mut player = test_player();
+        player.sleep_timer = Some(SleepTimer {
+            end_time: Instant::now() + Duration::from_secs(15),
+            total_duration: Duration::from_secs(60),
+            fade_started: false,
+            original_volume_db: 0.0,
+        });
+        match player.tick_sleep_timer() {
+            SleepAction::Fading(secs) => assert!(secs <= 15, "expected <= 15s, got {secs}s"),
+            other => panic!("expected Fading, got {other:?}"),
+        }
+        assert!(player.is_sleep_fading());
+    }
+
+    #[test]
+    fn cancel_during_fade_restores_volume() {
+        let mut player = test_player();
+        let original_bits = player.shared_volume.load(Ordering::Relaxed);
+
+        // Put player in fading state
+        player.sleep_timer = Some(SleepTimer {
+            end_time: Instant::now() + Duration::from_secs(10),
+            total_duration: Duration::from_secs(60),
+            fade_started: false,
+            original_volume_db: 0.0,
+        });
+        // Tick to start fade (modifies shared_volume)
+        player.tick_sleep_timer();
+        let faded_bits = player.shared_volume.load(Ordering::Relaxed);
+        assert_ne!(faded_bits, original_bits, "fade should have changed volume");
+
+        // Cancel should restore volume
+        player.handle_command(PlayerCommand::CancelSleepTimer);
+        let restored_bits = player.shared_volume.load(Ordering::Relaxed);
+        assert_eq!(restored_bits, original_bits);
+    }
 }
