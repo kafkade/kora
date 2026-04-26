@@ -298,6 +298,14 @@ impl Player {
         self.eq_preset.map(|p| p.name)
     }
 
+    /// Add a track to the queue and start playing it immediately.
+    pub fn add_and_play(&mut self, track: Track) -> PlayerAction {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        self.tracks.push(track);
+        self.current_index = self.tracks.len() - 1;
+        PlayerAction::LoadAndPlay
+    }
+
     /// Called when playback thread finishes naturally (track ended).
     pub fn on_track_finished(&mut self) -> PlayerAction {
         if self.state == PlaybackState::Playing && self.current_index + 1 < self.tracks.len() {

@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Internet radio search via Radio Browser API: `kora --radio "lofi hip hop"` finds and plays stations
 - Custom radio stations via `stations.toml` configuration file
 - `stations.toml.example` shipped in repo with sample stations
+- Basic podcast playback: `kora --podcast <RSS_URL>` fetches feed, lists episodes, and plays the most recent
+- Podcast state persistence: episode positions saved in `podcasts.toml`
+- 10 built-in color themes: Nord, Catppuccin Mocha, Gruvbox, Tokyo Night, Rosé Pine, Dracula, Solarized Dark, One Dark, Kanagawa, Matte Black
+- Press `t` to cycle themes during playback, theme name shown in status bar
+- `--theme` CLI flag and `--list-themes` to show available themes
+- File browser overlay: press `o` to browse directories, select audio files to queue and play
 
 ### Fixed
 
