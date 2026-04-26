@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Visual EQ display with vertical bars per band, selected band highlighted
 - Preset cycling within EQ view, display shows "Custom" when gains are manually adjusted
 - Custom EQ presets definable in `config.toml`
+- Spectrum visualizer: press `v` to toggle 32-bar frequency display, `V` for full-screen mode
+- Visualizer uses FFT with Hanning window, log-frequency binning, and smoothing for natural motion
+- Gapless playback: next track pre-decoded at 80% progress, seamless ring buffer transition with no audible gap
+- Gapless works across same-format tracks; falls back gracefully on sample rate or channel mismatch
 
 ### Changed
 

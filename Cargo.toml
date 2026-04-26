@@ -47,6 +47,9 @@ lofty = "0.24"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# FFT for spectrum visualizer
+rustfft = "6"
+
 # Error handling
 thiserror = "2"
 anyhow = "1"

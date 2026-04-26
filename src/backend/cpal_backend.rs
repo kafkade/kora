@@ -6,6 +6,8 @@ use cpal::StreamConfig;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::RingBuffer;
 
+use crate::playback::fft::SpectrumData;
+
 /// Information about an available audio output device.
 #[derive(Debug)]
 #[allow(dead_code)] // Used in tests and future device selection UI
@@ -147,6 +149,7 @@ pub fn play_audio(
 /// `volume` is a shared atomic storing the f32 linear gain as raw bits
 /// (`f32::to_bits()`). The producer reads it on each chunk, so volume
 /// changes from the Player take effect immediately — no track restart needed.
+#[allow(clippy::too_many_arguments)]
 pub fn play_audio_with_position(
     samples: &[f32],
     sample_rate: u32,
@@ -155,6 +158,7 @@ pub fn play_audio_with_position(
     stop: &Arc<AtomicBool>,
     pause: &Arc<AtomicBool>,
     samples_played: &AtomicU64,
+    spectrum: &Arc<SpectrumData>,
 ) -> Result<()> {
     let host = cpal::default_host();
     let device = host
@@ -191,6 +195,8 @@ pub fn play_audio_with_position(
     stream.play().context("Failed to start playback")?;
 
     let mut pos = 0;
+    let mut spectrum_counter: usize = 0;
+    const SPECTRUM_INTERVAL: usize = 2048;
     while pos < samples.len() && !stop.load(Ordering::Relaxed) {
         // When paused, sleep without pushing — the callback drains to silence
         if pause.load(Ordering::Relaxed) {
@@ -212,8 +218,165 @@ pub fn play_audio_with_position(
         for &s in chunk {
             let _ = producer.push(s * vol);
         }
+        let chunk_len = chunk_end - pos;
         pos = chunk_end;
         samples_played.store(pos as u64, Ordering::Relaxed);
+
+        // Update spectrum data periodically (on the producer thread — safe to allocate)
+        spectrum_counter += chunk_len;
+        if spectrum_counter >= SPECTRUM_INTERVAL {
+            let start = pos.saturating_sub(SPECTRUM_INTERVAL);
+            spectrum.update(&samples[start..pos], channels, sample_rate);
+            spectrum_counter = 0;
+        }
+    }
+
+    // Wait for drain
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if producer.slots() >= buffer_frames {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    if !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    drop(stream);
+    Ok(())
+}
+
+/// Play audio with gapless transition to a next track.
+///
+/// After the current track's samples finish, continues pushing `next_samples`
+/// into the same ring buffer and CPAL stream without tearing down the audio
+/// pipeline. The caller must ensure `next_samples` has the same sample rate
+/// and channel count. Sets `played_next` to `true` if `next_samples` were played.
+#[allow(dead_code)] // Available for true zero-gap playback in future
+#[allow(clippy::too_many_arguments)]
+pub fn play_audio_gapless(
+    samples: &[f32],
+    next_samples: Option<&[f32]>,
+    sample_rate: u32,
+    channels: usize,
+    volume: &Arc<AtomicU32>,
+    stop: &Arc<AtomicBool>,
+    pause: &Arc<AtomicBool>,
+    samples_played: &AtomicU64,
+    spectrum: &Arc<SpectrumData>,
+    played_next: &AtomicBool,
+) -> Result<()> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .context("No audio output device found.")?;
+
+    let config = StreamConfig {
+        channels: channels as u16,
+        sample_rate,
+        buffer_size: cpal::BufferSize::Default,
+    };
+
+    let buffer_frames = (sample_rate as usize * channels * 200) / 1000;
+    let (mut producer, mut consumer) = RingBuffer::new(buffer_frames);
+
+    let stream = device
+        .build_output_stream(
+            &config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                for sample in data.iter_mut() {
+                    match consumer.pop() {
+                        Ok(s) => *sample = s,
+                        Err(_) => *sample = 0.0,
+                    }
+                }
+            },
+            move |err| {
+                eprintln!("Audio stream error: {err}");
+            },
+            None,
+        )
+        .context("Failed to build audio stream")?;
+
+    stream.play().context("Failed to start playback")?;
+
+    // Push current track samples
+    let mut pos = 0;
+    let mut spectrum_counter: usize = 0;
+    const SPECTRUM_INTERVAL: usize = 2048;
+    while pos < samples.len() && !stop.load(Ordering::Relaxed) {
+        if pause.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
+
+        let slots = producer.slots();
+        if slots == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            continue;
+        }
+
+        let vol = f32::from_bits(volume.load(Ordering::Relaxed));
+        let chunk_end = (pos + slots).min(samples.len());
+        let chunk = &samples[pos..chunk_end];
+        for &s in chunk {
+            let _ = producer.push(s * vol);
+        }
+        let chunk_len = chunk_end - pos;
+        pos = chunk_end;
+        samples_played.store(pos as u64, Ordering::Relaxed);
+
+        spectrum_counter += chunk_len;
+        if spectrum_counter >= SPECTRUM_INTERVAL {
+            let start = pos.saturating_sub(SPECTRUM_INTERVAL);
+            spectrum.update(&samples[start..pos], channels, sample_rate);
+            spectrum_counter = 0;
+        }
+    }
+
+    // Gapless: continue pushing next track samples without stopping the stream
+    if let Some(next) = next_samples
+        && !stop.load(Ordering::Relaxed)
+        && !next.is_empty()
+    {
+        samples_played.store(0, Ordering::Relaxed);
+        played_next.store(true, Ordering::Relaxed);
+        let mut next_pos = 0;
+        spectrum_counter = 0;
+
+        while next_pos < next.len() && !stop.load(Ordering::Relaxed) {
+            if pause.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                continue;
+            }
+
+            let slots = producer.slots();
+            if slots == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+
+            let vol = f32::from_bits(volume.load(Ordering::Relaxed));
+            let chunk_end = (next_pos + slots).min(next.len());
+            let chunk = &next[next_pos..chunk_end];
+            for &s in chunk {
+                let _ = producer.push(s * vol);
+            }
+            let chunk_len = chunk_end - next_pos;
+            next_pos = chunk_end;
+            samples_played.store(next_pos as u64, Ordering::Relaxed);
+
+            spectrum_counter += chunk_len;
+            if spectrum_counter >= SPECTRUM_INTERVAL {
+                let start = next_pos.saturating_sub(SPECTRUM_INTERVAL);
+                spectrum.update(&next[start..next_pos], channels, sample_rate);
+                spectrum_counter = 0;
+            }
+        }
     }
 
     // Wait for drain
