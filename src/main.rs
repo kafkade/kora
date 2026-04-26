@@ -45,6 +45,14 @@ struct Cli {
     #[arg(long)]
     list_eq_presets: bool,
 
+    /// Color theme name (e.g., Nord, Dracula, Gruvbox)
+    #[arg(long, value_name = "NAME")]
+    theme: Option<String>,
+
+    /// List available themes and exit
+    #[arg(long)]
+    list_themes: bool,
+
     /// Skip session restore (start fresh)
     #[arg(long)]
     no_restore: bool,
@@ -52,6 +60,10 @@ struct Cli {
     /// Search internet radio by name and play the first result
     #[arg(long, value_name = "QUERY")]
     radio: Option<String>,
+
+    /// Fetch a podcast RSS feed and play the most recent episode
+    #[arg(long, value_name = "URL")]
+    podcast: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -80,8 +92,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.list_themes {
+        println!("Available themes:");
+        for name in tui::theme::theme_names() {
+            println!("  {name}");
+        }
+        return Ok(());
+    }
+
     let volume = cli.volume.unwrap_or(config.default_volume);
     let eq_preset = cli.eq_preset.or(config.eq_preset);
+    let theme_name = cli.theme.or_else(|| Some(config.theme.clone()));
 
     // Handle --radio: search Radio Browser API and play the first match.
     if let Some(ref query) = cli.radio {
@@ -104,7 +125,32 @@ fn main() -> Result<()> {
         let track = stations[0].to_track();
         eprintln!("Playing: {}", track.display_name());
         let player = playback::player::Player::new(vec![track], volume, eq_preset.as_deref())?;
-        tui::app::run(player, cli.no_restore)?;
+        tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
+        return Ok(());
+    }
+
+    // Handle --podcast: fetch RSS feed and play the most recent episode.
+    if let Some(ref feed_url) = cli.podcast {
+        eprintln!("Fetching podcast feed: {feed_url}");
+        let (feed, episodes) = providers::podcast::fetch_feed(feed_url)?;
+        if episodes.is_empty() {
+            eprintln!("No audio episodes found in \"{}\".", feed.title);
+            std::process::exit(1);
+        }
+        eprintln!("Podcast: {}", feed.title);
+        eprintln!("Episodes:");
+        for (i, ep) in episodes.iter().enumerate() {
+            let duration = ep
+                .duration_secs
+                .map(|s| format!(" ({}:{:02})", s / 60, s % 60))
+                .unwrap_or_default();
+            let date = ep.published.as_deref().unwrap_or("unknown date");
+            eprintln!("  {}. {} [{}]{}", i + 1, ep.title, date, duration);
+        }
+        let track = providers::podcast::episode_to_track(&episodes[0]);
+        eprintln!("Playing: {}", track.display_name());
+        let player = playback::player::Player::new(vec![track], volume, eq_preset.as_deref())?;
+        tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
         return Ok(());
     }
 
@@ -145,7 +191,7 @@ fn main() -> Result<()> {
 
     // Launch TUI player
     let player = playback::player::Player::new(tracks, volume, eq_preset.as_deref())?;
-    tui::app::run(player, cli.no_restore)?;
+    tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
 
     Ok(())
 }
