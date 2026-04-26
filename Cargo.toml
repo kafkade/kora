@@ -52,3 +52,6 @@ dirs = "6"
 
 # Ctrl+C handling
 ctrlc = "3"
+
+[dev-dependencies]
+serde_json = "1"

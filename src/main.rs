@@ -19,6 +19,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
+use crate::core::track::Track;
+use crate::playback::stream_decoder;
+
 #[derive(Parser)]
 #[command(
     name = "kora",
@@ -28,7 +31,7 @@ use clap::Parser;
 struct Cli {
     /// Files, directories, or URLs to play
     #[arg(value_name = "INPUT")]
-    inputs: Vec<PathBuf>,
+    inputs: Vec<String>,
 
     /// Volume in dB (e.g., -3 for quieter, 0 for default). Overrides config.
     #[arg(long)]
@@ -45,6 +48,10 @@ struct Cli {
     /// Skip session restore (start fresh)
     #[arg(long)]
     no_restore: bool,
+
+    /// Search internet radio by name and play the first result
+    #[arg(long, value_name = "QUERY")]
+    radio: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -76,12 +83,38 @@ fn main() -> Result<()> {
     let volume = cli.volume.unwrap_or(config.default_volume);
     let eq_preset = cli.eq_preset.or(config.eq_preset);
 
+    // Handle --radio: search Radio Browser API and play the first match.
+    if let Some(ref query) = cli.radio {
+        eprintln!("Searching Radio Browser for \"{}\"...", query);
+        let stations = providers::radio::search_by_name(query, 10)?;
+        if stations.is_empty() {
+            eprintln!("No stations found for \"{query}\".");
+            std::process::exit(1);
+        }
+        eprintln!("Found {} station(s):", stations.len());
+        for (i, s) in stations.iter().enumerate() {
+            eprintln!(
+                "  {}. {} [{} kbps, {}]",
+                i + 1,
+                s.name,
+                s.bitrate,
+                s.country
+            );
+        }
+        let track = stations[0].to_track();
+        eprintln!("Playing: {}", track.display_name());
+        let player = playback::player::Player::new(vec![track], volume, eq_preset.as_deref())?;
+        tui::app::run(player, cli.no_restore)?;
+        return Ok(());
+    }
+
     let inputs = if cli.inputs.is_empty() {
         if let Some(ref music_dir) = config.music_dir {
-            vec![music_dir.clone()]
+            vec![music_dir.to_string_lossy().into_owned()]
         } else {
             eprintln!("Usage: kora <file.mp3|file.flac|...>");
             eprintln!("       kora ~/Music/");
+            eprintln!("       kora https://example.com/stream.mp3");
             eprintln!(
                 "Tip: set music_dir in {} to skip this.",
                 core::config::KoraConfig::config_path().display()
@@ -92,7 +125,16 @@ fn main() -> Result<()> {
         cli.inputs
     };
 
-    let tracks = providers::local::resolve_inputs(&inputs)?;
+    // Partition inputs into file paths and URLs
+    let (url_inputs, file_inputs): (Vec<_>, Vec<_>) =
+        inputs.iter().partition(|s| stream_decoder::is_url(s));
+
+    let file_paths: Vec<PathBuf> = file_inputs.iter().map(PathBuf::from).collect();
+    let mut tracks = providers::local::resolve_inputs(&file_paths)?;
+
+    for url in &url_inputs {
+        tracks.push(Track::from_url(url.to_string()));
+    }
 
     if tracks.is_empty() {
         eprintln!("No playable audio files found.");

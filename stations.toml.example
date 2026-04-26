@@ -1,0 +1,15 @@
+# Custom radio stations for kora
+# Place this file at ~/.config/kora/stations.toml (Linux/macOS)
+# or %APPDATA%/kora/stations.toml (Windows)
+
+[[station]]
+name = "KEXP"
+url = "https://kexp-mp3-128.streamguys1.com/kexp128.mp3"
+genre = "Indie"
+country = "US"
+
+[[station]]
+name = "SomaFM Groove Salad"
+url = "https://ice1.somafm.com/groovesalad-256-mp3"
+genre = "Ambient"
+country = "US"
