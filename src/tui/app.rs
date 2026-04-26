@@ -17,6 +17,7 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use super::file_browser::FileBrowser;
+use super::podcast_view::{InputMode, PodcastView, PodcastViewMode};
 use super::theme::{self, Theme};
 use crate::core::session::Session;
 use crate::core::track::Track;
@@ -116,6 +117,7 @@ fn run_loop(
     let save_interval = Duration::from_secs(30);
     let mut last_save = Instant::now();
     let mut file_browser: Option<FileBrowser> = None;
+    let mut podcast_view: Option<PodcastView> = None;
     let mut show_eq = false;
     let mut show_lyrics = false;
     let mut visualizer_mode = VisualizerMode::Normal;
@@ -133,6 +135,7 @@ fn run_loop(
                 player,
                 theme,
                 file_browser.as_ref(),
+                podcast_view.as_ref(),
                 show_eq,
                 show_lyrics,
                 visualizer_mode,
@@ -277,6 +280,85 @@ fn run_loop(
                 continue;
             }
 
+            // Podcast view input handling (takes priority when open)
+            if podcast_view.is_some() {
+                let mut close_podcast = false;
+                let mut play_episode = false;
+
+                if let Some(ref mut pv) = podcast_view {
+                    // Text input mode for adding a feed URL
+                    if pv.input_mode() == InputMode::AddingFeed {
+                        match key.code {
+                            KeyCode::Esc => pv.cancel_input(),
+                            KeyCode::Enter => pv.submit_input(),
+                            KeyCode::Backspace => pv.input_backspace(),
+                            KeyCode::Char(c) => pv.input_char(c),
+                            _ => {}
+                        }
+                    } else {
+                        match key.code {
+                            KeyCode::Esc => {
+                                if pv.back() {
+                                    close_podcast = true;
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                if pv.back() {
+                                    close_podcast = true;
+                                }
+                            }
+                            KeyCode::Char('j') | KeyCode::Down => pv.select_down(),
+                            KeyCode::Char('k') | KeyCode::Up => pv.select_up(),
+                            KeyCode::Enter => {
+                                play_episode = pv.enter();
+                            }
+                            KeyCode::Char('a') => pv.start_add_feed(),
+                            KeyCode::Char('x') | KeyCode::Delete => {
+                                let idx = pv.selected_feed_index();
+                                if pv.mode() == PodcastViewMode::FeedList {
+                                    pv.remove_feed(idx);
+                                }
+                            }
+                            KeyCode::Char('R') => {
+                                if pv.mode() == PodcastViewMode::EpisodeList {
+                                    let idx = pv.selected_feed_index();
+                                    pv.refresh_feed(idx);
+                                } else {
+                                    pv.refresh_all();
+                                }
+                            }
+                            KeyCode::Char('q') => {
+                                if let Err(e) = player.save_session() {
+                                    tracing::warn!("Failed to save session on quit: {e}");
+                                }
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                if play_episode
+                    && let Some(ref pv) = podcast_view
+                    && let Some(track) = pv.selected_episode_track()
+                {
+                    let action = player.add_and_play(track);
+                    handle_action(
+                        action,
+                        player,
+                        playback_handle,
+                        &mut gapless_played_next,
+                        &mut pre_decode_triggered,
+                    )?;
+                }
+
+                if close_podcast {
+                    podcast_view = None;
+                }
+
+                continue;
+            }
+
             // EQ view input handling
             if show_eq {
                 let cmd = match key.code {
@@ -372,6 +454,13 @@ fn run_loop(
                         .and_then(|c| c.music_dir)
                         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")));
                     file_browser = Some(FileBrowser::new(start_dir));
+                    None
+                }
+                KeyCode::Char('P') => {
+                    let state = crate::providers::podcast::load_state().unwrap_or_default();
+                    let mut pv = PodcastView::new(&state);
+                    pv.ensure_refreshed();
+                    podcast_view = Some(pv);
                     None
                 }
                 KeyCode::Char('f') => Some(PlayerCommand::ToggleFavorite),
@@ -489,6 +578,7 @@ fn draw(
     player: &Player,
     theme: &Theme,
     file_browser: Option<&FileBrowser>,
+    podcast_view: Option<&PodcastView>,
     show_eq: bool,
     show_lyrics: bool,
     visualizer_mode: VisualizerMode,
@@ -562,6 +652,11 @@ fn draw(
     // File browser overlay
     if let Some(browser) = file_browser {
         draw_file_browser(frame, area, browser, theme);
+    }
+
+    // Podcast view overlay
+    if let Some(pv) = podcast_view {
+        draw_podcast_view(frame, area, pv, theme);
     }
 }
 
@@ -805,6 +900,8 @@ fn draw_status_bar(
         Span::styled(":Theme ", theme.help_text),
         Span::styled("o", theme.help_key),
         Span::styled(":Browse ", theme.help_text),
+        Span::styled("P", theme.help_key),
+        Span::styled(":Podcast ", theme.help_text),
         Span::styled("f", theme.help_key),
         Span::styled(":Fav ", theme.help_text),
         Span::styled("z", theme.help_key),
@@ -1161,6 +1258,218 @@ fn draw_file_browser(frame: &mut Frame, area: Rect, browser: &FileBrowser, theme
 
     let list = List::new(items);
     frame.render_widget(list, inner);
+}
+
+fn draw_podcast_view(frame: &mut Frame, area: Rect, pv: &PodcastView, theme: &Theme) {
+    let popup_area = centered_rect(80, 80, area);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    // Reserve bottom row for help bar (and input bar when adding)
+    let input_active = pv.input_mode() == InputMode::AddingFeed;
+    let bottom_rows = if input_active { 2 } else { 1 };
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(bottom_rows)])
+        .split(popup_area);
+
+    let content_area = layout[0];
+    let bottom_area = layout[1];
+
+    match pv.mode() {
+        PodcastViewMode::FeedList => {
+            let title = if let Some(msg) = pv.status_message() {
+                format!(" Podcasts — {msg} ")
+            } else {
+                " Podcasts ".to_string()
+            };
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme.border)
+                .title(title)
+                .title_style(theme.title);
+
+            let inner = block.inner(content_area);
+            frame.render_widget(block, content_area);
+
+            let feeds = pv.feeds();
+            if feeds.is_empty() {
+                let msg = Paragraph::new(Line::from(Span::styled(
+                    "  No podcasts subscribed. Press 'a' to add a feed.",
+                    theme.status_info,
+                )));
+                frame.render_widget(msg, inner);
+            } else {
+                let visible_height = inner.height as usize;
+                let scroll = pv.scroll_offset();
+                let end = (scroll + visible_height).min(feeds.len());
+
+                let items: Vec<ListItem> = feeds[scroll..end]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, entry)| {
+                        let idx = scroll + i;
+                        let is_selected = idx == pv.selected_feed_index();
+                        let prefix = if is_selected { "▶ " } else { "  " };
+                        let ep_count = if entry.episode_count > 0 {
+                            format!(" ({} eps)", entry.episode_count)
+                        } else {
+                            String::new()
+                        };
+                        let style = if is_selected {
+                            theme.playlist_current
+                        } else {
+                            theme.playlist_normal
+                        };
+                        ListItem::new(Line::from(Span::styled(
+                            format!("{prefix}{}{ep_count}", entry.feed.title),
+                            style,
+                        )))
+                    })
+                    .collect();
+
+                let list = List::new(items);
+                frame.render_widget(list, inner);
+            }
+        }
+        PodcastViewMode::EpisodeList => {
+            let feed_title = pv
+                .feeds()
+                .get(pv.selected_feed_index())
+                .map(|f| f.feed.title.as_str())
+                .unwrap_or("Unknown");
+
+            let title = if let Some(msg) = pv.status_message() {
+                format!(" {feed_title} — {msg} ")
+            } else {
+                format!(" {feed_title} ")
+            };
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme.border)
+                .title(title)
+                .title_style(theme.title);
+
+            let inner = block.inner(content_area);
+            frame.render_widget(block, content_area);
+
+            if let Some(feed_entry) = pv.feeds().get(pv.selected_feed_index()) {
+                let episodes = &feed_entry.episodes;
+                if episodes.is_empty() {
+                    let msg = Paragraph::new(Line::from(Span::styled(
+                        "  No episodes found",
+                        theme.status_info,
+                    )));
+                    frame.render_widget(msg, inner);
+                } else {
+                    let visible_height = inner.height as usize;
+                    let scroll = pv.scroll_offset();
+                    let end = (scroll + visible_height).min(episodes.len());
+
+                    let items: Vec<ListItem> = episodes[scroll..end]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, ep)| {
+                            let idx = scroll + i;
+                            let is_selected = idx == pv.selected_episode_index();
+                            let prefix = if is_selected { "▶ " } else { "  " };
+                            let played_icon = if ep.played { "✓ " } else { "  " };
+                            let duration_str = ep
+                                .duration_secs
+                                .map(|s| {
+                                    let mins = s / 60;
+                                    let secs = s % 60;
+                                    format!(" [{mins}:{secs:02}]")
+                                })
+                                .unwrap_or_default();
+                            let date_str = ep
+                                .published
+                                .as_ref()
+                                .map(|d| {
+                                    // Show a short date prefix
+                                    let short = if d.len() > 16 { &d[..16] } else { d };
+                                    format!(" ({short})")
+                                })
+                                .unwrap_or_default();
+                            let style = if is_selected {
+                                theme.playlist_current
+                            } else if ep.played {
+                                theme.status_info
+                            } else {
+                                theme.playlist_normal
+                            };
+                            ListItem::new(Line::from(Span::styled(
+                                format!(
+                                    "{prefix}{played_icon}{}{duration_str}{date_str}",
+                                    ep.title
+                                ),
+                                style,
+                            )))
+                        })
+                        .collect();
+
+                    let list = List::new(items);
+                    frame.render_widget(list, inner);
+                }
+            }
+        }
+    }
+
+    // Bottom area: input bar and/or help bar
+    if input_active {
+        let input_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(bottom_area);
+
+        let input_line = Line::from(vec![
+            Span::styled(" Feed URL: ", theme.title),
+            Span::styled(pv.input_buffer(), theme.track_title),
+            Span::styled("█", theme.playlist_current),
+        ]);
+        frame.render_widget(Paragraph::new(input_line), input_layout[0]);
+
+        let help = Line::from(vec![
+            Span::styled("Enter", theme.help_key),
+            Span::styled(":Submit ", theme.help_text),
+            Span::styled("Esc", theme.help_key),
+            Span::styled(":Cancel", theme.help_text),
+        ]);
+        frame.render_widget(Paragraph::new(help), input_layout[1]);
+    } else {
+        let help_spans = match pv.mode() {
+            PodcastViewMode::FeedList => vec![
+                Span::styled("j/k", theme.help_key),
+                Span::styled(":Navigate ", theme.help_text),
+                Span::styled("Enter", theme.help_key),
+                Span::styled(":Episodes ", theme.help_text),
+                Span::styled("a", theme.help_key),
+                Span::styled(":Add Feed ", theme.help_text),
+                Span::styled("x", theme.help_key),
+                Span::styled(":Remove ", theme.help_text),
+                Span::styled("R", theme.help_key),
+                Span::styled(":Refresh All ", theme.help_text),
+                Span::styled("Esc", theme.help_key),
+                Span::styled(":Close", theme.help_text),
+            ],
+            PodcastViewMode::EpisodeList => vec![
+                Span::styled("j/k", theme.help_key),
+                Span::styled(":Navigate ", theme.help_text),
+                Span::styled("Enter", theme.help_key),
+                Span::styled(":Play ", theme.help_text),
+                Span::styled("R", theme.help_key),
+                Span::styled(":Refresh ", theme.help_text),
+                Span::styled("Bksp/Esc", theme.help_key),
+                Span::styled(":Back", theme.help_text),
+            ],
+        };
+        let help = Line::from(help_spans);
+        frame.render_widget(Paragraph::new(help), bottom_area);
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

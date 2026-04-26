@@ -16,7 +16,7 @@ mod tui;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::core::track::Track;
@@ -64,6 +64,14 @@ struct Cli {
     /// Fetch a podcast RSS feed and play the most recent episode
     #[arg(long, value_name = "URL")]
     podcast: Option<String>,
+
+    /// Import podcast subscriptions from an OPML file
+    #[arg(long, value_name = "FILE")]
+    import_opml: Option<String>,
+
+    /// Export podcast subscriptions to an OPML file
+    #[arg(long, value_name = "FILE")]
+    export_opml: Option<String>,
 
     /// List available audio output devices and exit
     #[arg(long)]
@@ -119,6 +127,31 @@ fn main() -> Result<()> {
                 println!("  {}{marker}", d.name);
             }
         }
+        return Ok(());
+    }
+
+    // Handle --import-opml: read OPML file and import feeds into podcast state.
+    if let Some(ref opml_path) = cli.import_opml {
+        let content = std::fs::read_to_string(opml_path)
+            .with_context(|| format!("Failed to read OPML file: {opml_path}"))?;
+        let entries = providers::opml::import_opml(&content)?;
+        let total = entries.len();
+        let mut state = providers::podcast::load_state()?;
+        let added = state.import_feeds_from_opml(&entries);
+        providers::podcast::save_state(&state)?;
+        let skipped = total - added;
+        println!("Imported {added} new feed(s) ({skipped} already subscribed)");
+        return Ok(());
+    }
+
+    // Handle --export-opml: export podcast subscriptions to an OPML file.
+    if let Some(ref opml_path) = cli.export_opml {
+        let state = providers::podcast::load_state()?;
+        let feeds = state.export_feeds();
+        let xml = providers::opml::export_opml(feeds);
+        std::fs::write(opml_path, &xml)
+            .with_context(|| format!("Failed to write OPML file: {opml_path}"))?;
+        println!("Exported {} feed(s) to {opml_path}", feeds.len());
         return Ok(());
     }
 
