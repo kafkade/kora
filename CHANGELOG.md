@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lyrics loaded from `.lrc` sidecar files or embedded tags (ID3v2 USLT, Vorbis LYRICS)
 - AAC and ALAC (M4A) format support via symphonia
 - Helpful error message when attempting to play WMA files (requires ffmpeg)
+- OPML import/export: `--import-opml <FILE>` and `--export-opml <FILE>` for podcast subscription portability
+- Podcast subscription management in TUI: press `P` to open podcast view
+- Add podcast feeds by URL, remove subscriptions, refresh feeds from within the TUI
+- Podcast episode browser with played/unplayed indicators, duration, and publish dates
 
 ### Changed
 

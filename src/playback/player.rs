@@ -96,6 +96,12 @@ pub enum PlayerCommand {
     #[allow(dead_code)] // Available for CLI/IPC device listing
     ListDevices,
     SetDevice(String),
+    /// Open the podcast browser view (handled in TUI layer).
+    #[allow(dead_code)]
+    OpenPodcasts,
+    /// Add a podcast feed by URL (handled in TUI layer).
+    #[allow(dead_code)]
+    AddPodcastFeed(String),
     Quit,
 }
 
@@ -627,6 +633,10 @@ impl Player {
             }
             PlayerCommand::SetDevice(name) => {
                 self.device_name = Some(name);
+                PlayerAction::None
+            }
+            PlayerCommand::OpenPodcasts | PlayerCommand::AddPodcastFeed(_) => {
+                // Handled in the TUI layer — no playback state change needed.
                 PlayerAction::None
             }
             PlayerCommand::Quit => PlayerAction::Quit,

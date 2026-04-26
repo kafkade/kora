@@ -34,7 +34,7 @@ pub struct PodcastEpisode {
 }
 
 /// Persisted podcast state (subscriptions + resume positions).
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[allow(dead_code)] // Public API — used by future TUI podcast management
 pub struct PodcastState {
     #[serde(default)]
@@ -42,6 +42,31 @@ pub struct PodcastState {
     /// Map of audio URL → last playback position in ms.
     #[serde(default)]
     pub episode_positions: HashMap<String, u64>,
+}
+
+impl PodcastState {
+    /// Import feeds from OPML entries, deduplicating by URL.
+    /// Returns the number of newly added feeds.
+    pub fn import_feeds_from_opml(&mut self, entries: &[super::opml::OpmlEntry]) -> usize {
+        let mut added = 0;
+        for entry in entries {
+            let already_exists = self.feeds.iter().any(|f| f.url == entry.url);
+            if !already_exists {
+                self.feeds.push(PodcastFeed {
+                    url: entry.url.clone(),
+                    title: entry.title.clone(),
+                    description: String::new(),
+                });
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// Return all subscribed feeds (convenience accessor for OPML export).
+    pub fn export_feeds(&self) -> &[PodcastFeed] {
+        &self.feeds
+    }
 }
 
 /// Fetch an RSS feed and parse it into a `PodcastFeed` + episode list.
@@ -390,5 +415,62 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_feeds_deduplicates_by_url() {
+        let mut state = PodcastState {
+            feeds: vec![PodcastFeed {
+                url: "https://existing.example.com/rss".to_string(),
+                title: "Existing Pod".to_string(),
+                description: String::new(),
+            }],
+            episode_positions: HashMap::new(),
+        };
+
+        let entries = vec![
+            super::super::opml::OpmlEntry {
+                title: "New Feed".to_string(),
+                url: "https://new.example.com/rss".to_string(),
+            },
+            super::super::opml::OpmlEntry {
+                title: "Existing Pod (dupe)".to_string(),
+                url: "https://existing.example.com/rss".to_string(),
+            },
+            super::super::opml::OpmlEntry {
+                title: "Another New".to_string(),
+                url: "https://another.example.com/rss".to_string(),
+            },
+        ];
+
+        let added = state.import_feeds_from_opml(&entries);
+        assert_eq!(added, 2);
+        assert_eq!(state.feeds.len(), 3);
+        // Original title preserved for the duplicate
+        assert_eq!(state.feeds[0].title, "Existing Pod");
+    }
+
+    #[test]
+    fn export_feeds_returns_all() {
+        let state = PodcastState {
+            feeds: vec![
+                PodcastFeed {
+                    url: "https://a.com/rss".to_string(),
+                    title: "A".to_string(),
+                    description: String::new(),
+                },
+                PodcastFeed {
+                    url: "https://b.com/rss".to_string(),
+                    title: "B".to_string(),
+                    description: String::new(),
+                },
+            ],
+            episode_positions: HashMap::new(),
+        };
+
+        let feeds = state.export_feeds();
+        assert_eq!(feeds.len(), 2);
+        assert_eq!(feeds[0].title, "A");
+        assert_eq!(feeds[1].title, "B");
     }
 }
