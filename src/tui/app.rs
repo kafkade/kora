@@ -117,6 +117,7 @@ fn run_loop(
     let mut file_browser: Option<FileBrowser> = None;
     let mut show_eq = false;
     let mut visualizer_mode = VisualizerMode::Normal;
+    let mut status_message: Option<(String, Instant)> = None;
 
     // Gapless playback state
     let mut gapless_played_next: Option<Arc<AtomicBool>> = None;
@@ -132,8 +133,16 @@ fn run_loop(
                 file_browser.as_ref(),
                 show_eq,
                 visualizer_mode,
+                status_message.as_ref().map(|(msg, _)| msg.as_str()),
             )
         })?;
+
+        // Clear expired status messages (show for 3 seconds)
+        if let Some((_, time)) = &status_message
+            && time.elapsed() > Duration::from_secs(3)
+        {
+            status_message = None;
+        }
 
         // Tick sleep timer
         if let SleepAction::Stop = player.tick_sleep_timer() {
@@ -325,6 +334,35 @@ fn run_loop(
                     *theme = themes[*theme_index].clone();
                     None
                 }
+                KeyCode::Char('d') => {
+                    match crate::backend::cpal_backend::list_devices() {
+                        Ok(devices) if !devices.is_empty() => {
+                            let current_name = player.device_name().unwrap_or("");
+                            let current_pos = devices
+                                .iter()
+                                .position(|d| d.name.eq_ignore_ascii_case(current_name))
+                                .unwrap_or(devices.len()); // if not found, wraps to 0
+                            let next_idx = (current_pos + 1) % devices.len();
+                            let next_device = &devices[next_idx];
+                            let msg = if next_device.is_default {
+                                format!("Device: {} (default)", next_device.name)
+                            } else {
+                                format!("Device: {}", next_device.name)
+                            };
+                            player
+                                .handle_command(PlayerCommand::SetDevice(next_device.name.clone()));
+                            status_message = Some((msg, Instant::now()));
+                        }
+                        Ok(_) => {
+                            status_message =
+                                Some(("No audio devices found".to_string(), Instant::now()));
+                        }
+                        Err(e) => {
+                            status_message = Some((format!("Device error: {e}"), Instant::now()));
+                        }
+                    }
+                    None
+                }
                 KeyCode::Char('o') => {
                     let start_dir = crate::core::config::KoraConfig::load()
                         .ok()
@@ -445,6 +483,7 @@ fn draw(
     file_browser: Option<&FileBrowser>,
     show_eq: bool,
     visualizer_mode: VisualizerMode,
+    status_message: Option<&str>,
 ) {
     let area = frame.area();
 
@@ -482,7 +521,7 @@ fn draw(
                 draw_playlist(frame, chunks[1], player, theme);
             }
         }
-        draw_status_bar(frame, chunks[2], player, theme);
+        draw_status_bar(frame, chunks[2], player, theme, status_message);
     }
 
     // File browser overlay
@@ -642,7 +681,13 @@ fn draw_playlist(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) 
     frame.render_widget(list, area);
 }
 
-fn draw_status_bar(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) {
+fn draw_status_bar(
+    frame: &mut Frame,
+    area: Rect,
+    player: &Player,
+    theme: &Theme,
+    status_message: Option<&str>,
+) {
     let mut spans = vec![
         Span::styled("Spc", theme.help_key),
         Span::styled(":Play/Pause ", theme.help_text),
@@ -672,6 +717,8 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
         Span::styled(":Speed ", theme.help_text),
         Span::styled("S", theme.help_key),
         Span::styled(":Sleep ", theme.help_text),
+        Span::styled("d", theme.help_key),
+        Span::styled(":Device ", theme.help_text),
         Span::styled("q", theme.help_key),
         Span::styled(":Quit", theme.help_text),
     ];
@@ -686,6 +733,10 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
             format!(" | Sleep: {mins}:{secs:02}")
         };
         spans.push(Span::styled(sleep_text, theme.status_info));
+    }
+
+    if let Some(msg) = status_message {
+        spans.push(Span::styled(format!(" | {msg}"), theme.status_info));
     }
 
     let help = Line::from(spans);

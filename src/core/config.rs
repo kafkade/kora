@@ -30,6 +30,8 @@ pub struct KoraConfig {
     pub buffer_ms: u32,
     /// ReplayGain mode: "off", "track" (default), or "album".
     pub replaygain: String,
+    /// Preferred audio output device name (substring match, case-insensitive).
+    pub audio_device: Option<String>,
     /// Custom EQ presets (in addition to built-in ones).
     #[serde(default)]
     pub custom_eq_presets: Vec<CustomEqPreset>,
@@ -45,6 +47,7 @@ impl Default for KoraConfig {
             sample_rate: None,
             buffer_ms: 200,
             replaygain: "track".to_string(),
+            audio_device: None,
             custom_eq_presets: Vec::new(),
         }
     }
@@ -132,6 +135,7 @@ mod tests {
         assert!(config.sample_rate.is_none());
         assert_eq!(config.buffer_ms, 200);
         assert_eq!(config.replaygain, "track");
+        assert!(config.audio_device.is_none());
         assert!(config.custom_eq_presets.is_empty());
     }
 
@@ -145,6 +149,7 @@ mod tests {
             sample_rate: Some(48000),
             buffer_ms: 300,
             replaygain: "album".to_string(),
+            audio_device: Some("Headphones".to_string()),
             custom_eq_presets: vec![CustomEqPreset {
                 name: "Test".to_string(),
                 gains: [1.0, 2.0, 3.0, 4.0, 5.0, -1.0, -2.0, -3.0, -4.0, -5.0],
@@ -161,6 +166,7 @@ mod tests {
         assert_eq!(loaded.sample_rate, config.sample_rate);
         assert_eq!(loaded.buffer_ms, config.buffer_ms);
         assert_eq!(loaded.replaygain, config.replaygain);
+        assert_eq!(loaded.audio_device, config.audio_device);
         assert_eq!(loaded.custom_eq_presets.len(), 1);
         assert_eq!(loaded.custom_eq_presets[0].name, "Test");
         assert_eq!(

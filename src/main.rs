@@ -64,6 +64,14 @@ struct Cli {
     /// Fetch a podcast RSS feed and play the most recent episode
     #[arg(long, value_name = "URL")]
     podcast: Option<String>,
+
+    /// List available audio output devices and exit
+    #[arg(long)]
+    list_devices: bool,
+
+    /// Select audio output device by name (case-insensitive substring match)
+    #[arg(long, value_name = "NAME")]
+    device: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -100,10 +108,25 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.list_devices {
+        let devices = backend::cpal_backend::list_devices()?;
+        if devices.is_empty() {
+            println!("No audio output devices found.");
+        } else {
+            println!("Available audio output devices:");
+            for d in &devices {
+                let marker = if d.is_default { " (default)" } else { "" };
+                println!("  {}{marker}", d.name);
+            }
+        }
+        return Ok(());
+    }
+
     let volume = cli.volume.unwrap_or(config.default_volume);
     let eq_preset = cli.eq_preset.or(config.eq_preset);
     let theme_name = cli.theme.or_else(|| Some(config.theme.clone()));
     let rg_mode = playback::replaygain::ReplayGainMode::from_str_config(&config.replaygain);
+    let device_name = cli.device.or(config.audio_device);
 
     // Handle --radio: search Radio Browser API and play the first match.
     if let Some(ref query) = cli.radio {
@@ -125,8 +148,13 @@ fn main() -> Result<()> {
         }
         let track = stations[0].to_track();
         eprintln!("Playing: {}", track.display_name());
-        let player =
-            playback::player::Player::new(vec![track], volume, eq_preset.as_deref(), rg_mode)?;
+        let player = playback::player::Player::new(
+            vec![track],
+            volume,
+            eq_preset.as_deref(),
+            rg_mode,
+            device_name.clone(),
+        )?;
         tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
         return Ok(());
     }
@@ -151,8 +179,13 @@ fn main() -> Result<()> {
         }
         let track = providers::podcast::episode_to_track(&episodes[0]);
         eprintln!("Playing: {}", track.display_name());
-        let player =
-            playback::player::Player::new(vec![track], volume, eq_preset.as_deref(), rg_mode)?;
+        let player = playback::player::Player::new(
+            vec![track],
+            volume,
+            eq_preset.as_deref(),
+            rg_mode,
+            device_name.clone(),
+        )?;
         tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
         return Ok(());
     }
@@ -193,7 +226,8 @@ fn main() -> Result<()> {
     tracing::info!("Playing {} track(s)", tracks.len());
 
     // Launch TUI player
-    let player = playback::player::Player::new(tracks, volume, eq_preset.as_deref(), rg_mode)?;
+    let player =
+        playback::player::Player::new(tracks, volume, eq_preset.as_deref(), rg_mode, device_name)?;
     tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
 
     Ok(())
