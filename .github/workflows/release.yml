@@ -76,7 +76,7 @@ jobs:
           "$hash  kora-${{ github.ref_name }}-${{ matrix.target }}.zip" | Out-File -Encoding ascii "kora-${{ github.ref_name }}-${{ matrix.target }}.zip.sha256"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kora-${{ matrix.target }}
           path: |
