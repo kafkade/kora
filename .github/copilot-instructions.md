@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-kora is a fast, multi-source terminal audio player built in Rust. It plays local audio files, internet radio stations, and podcasts from the terminal — with an equalizer, visualizer, themes, and more planned. The project is in early development (Phase 0–1).
+kora is a fast, multi-source terminal audio player built in Rust. It plays local audio files, internet radio stations, and podcasts from the terminal — with an equalizer, visualizer, themes, and more planned. The project is in active development (Phase 2 — Daily Driver).
 
 ## Non-Negotiable Constraints
 
@@ -20,11 +20,11 @@ Single Rust crate with clear module boundaries (split into workspace when needed
 
 ```
 src/
-├── core/       — Domain models, provider traits, config, session (no audio deps)
-├── playback/   — Decode (symphonia), DSP (EQ, volume), playback state machine
+├── core/       — Domain models, config, session, provider traits (no audio deps)
+├── playback/   — Decode (symphonia), DSP (EQ, biquad filters), player controller
 ├── backend/    — Audio output adapters (CPAL for native)
 ├── providers/  — Audio source implementations (local, radio, podcast)
-├── tui/        — Terminal UI (ratatui + crossterm)
+├── tui/        — Terminal UI (ratatui + crossterm), theme
 └── ipc/        — Remote control protocol (Unix socket / named pipe)
 ```
 

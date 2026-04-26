@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
+use cpal::StreamConfig;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleRate, StreamConfig};
 use rtrb::RingBuffer;
 
 /// Information about an available audio output device.
@@ -20,14 +20,16 @@ pub fn list_devices() -> Result<Vec<AudioDevice>> {
     let host = cpal::default_host();
     let default_name = host
         .default_output_device()
-        .and_then(|d| d.name().ok())
+        .and_then(|d| d.description().ok())
+        .map(|d| d.name().to_string())
         .unwrap_or_default();
 
     let devices: Vec<AudioDevice> = host
         .output_devices()
         .context("Failed to enumerate audio output devices")?
         .filter_map(|d| {
-            let name = d.name().ok()?;
+            let desc = d.description().ok()?;
+            let name = desc.name().to_string();
             Some(AudioDevice {
                 is_default: name == default_name,
                 name,
@@ -56,12 +58,15 @@ pub fn play_audio(
         .default_output_device()
         .context("No audio output device found. Check your system audio settings.")?;
 
-    let device_name = device.name().unwrap_or_else(|_| "Unknown".into());
+    let device_name = device
+        .description()
+        .map(|d| d.name().to_string())
+        .unwrap_or_else(|_| "Unknown".into());
     tracing::info!("Audio device: {device_name}");
 
     let config = StreamConfig {
         channels: channels as u16,
-        sample_rate: SampleRate(sample_rate),
+        sample_rate,
         buffer_size: cpal::BufferSize::Default,
     };
 
@@ -158,7 +163,7 @@ pub fn play_audio_with_position(
 
     let config = StreamConfig {
         channels: channels as u16,
-        sample_rate: SampleRate(sample_rate),
+        sample_rate,
         buffer_size: cpal::BufferSize::Default,
     };
 

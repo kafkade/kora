@@ -26,7 +26,39 @@ kora ~/Music/
 
 # Play multiple files
 kora *.flac
+
+# Play an HTTP stream
+kora https://example.com/stream.mp3
+
+# Search and play internet radio
+kora --radio "lofi hip hop"
+
+# Play with EQ preset
+kora --eq-preset Rock ~/Music/
+
+# List available EQ presets
+kora --list-eq-presets
 ```
+
+## Features
+
+- **TUI** with track info, progress bar, playlist, and keyboard controls
+- **10-band graphic EQ** with 11 built-in presets (Rock, Jazz, Pop, Classical, and more)
+- **Internet radio** via Radio Browser API (30,000+ stations) and custom `stations.toml`
+- **HTTP stream playback** — play any audio URL directly
+- **Session persistence** — resume where you left off across restarts
+- **Configuration file** — `config.toml` with sensible defaults
+- **Nord color theme** — beautiful out of the box
+
+### Keyboard Controls
+
+| Key | Action |
+|-----|--------|
+| Space | Play / Pause |
+| n / p | Next / Previous track |
+| + / - | Volume up / down (1dB) |
+| s | Stop |
+| q | Quit (auto-saves session) |
 
 ## Supported Formats
 
@@ -51,7 +83,7 @@ cargo install --path .
 
 ## Status
 
-🚧 **Early development** — Phase 0 (First Sound). See [ROADMAP.md](ROADMAP.md) for the full plan.
+🚧 **Early development** — Phase 2 (Daily Driver). Local files, internet radio, and HTTP streams are working. See [ROADMAP.md](ROADMAP.md) for the full plan.
 
 ## License
 
