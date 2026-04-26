@@ -297,16 +297,14 @@ fn run_loop(
                         }
                     } else {
                         match key.code {
-                            KeyCode::Esc => {
-                                if pv.back() {
-                                    close_podcast = true;
-                                }
+                            KeyCode::Esc if pv.back() => {
+                                close_podcast = true;
                             }
-                            KeyCode::Backspace => {
-                                if pv.back() {
-                                    close_podcast = true;
-                                }
+                            KeyCode::Esc => {}
+                            KeyCode::Backspace if pv.back() => {
+                                close_podcast = true;
                             }
+                            KeyCode::Backspace => {}
                             KeyCode::Char('j') | KeyCode::Down => pv.select_down(),
                             KeyCode::Char('k') | KeyCode::Up => pv.select_up(),
                             KeyCode::Enter => {
