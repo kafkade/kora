@@ -17,6 +17,7 @@ use crate::core::track::{Track, TrackSource};
 use crate::core::types::Volume;
 use crate::playback::decoder;
 use crate::playback::eq::{self, EqPreset, Equalizer};
+use crate::playback::stream_decoder;
 
 /// Playback state visible to the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,16 +116,12 @@ impl Player {
         }
 
         let track = &self.tracks[self.current_index];
-        let path = match &track.source {
-            TrackSource::File(p) => p.clone(),
-            TrackSource::Url(_) => {
-                tracing::warn!("URL playback not yet supported");
-                return Ok(());
-            }
+        let decoded = match &track.source {
+            TrackSource::File(p) => decoder::decode_file(p)
+                .with_context(|| format!("Failed to decode {}", p.display()))?,
+            TrackSource::Url(url) => stream_decoder::decode_url(url)
+                .with_context(|| format!("Failed to stream {url}"))?,
         };
-
-        let decoded = decoder::decode_file(&path)
-            .with_context(|| format!("Failed to decode {}", path.display()))?;
 
         let samples = if let Some(p) = self.eq_preset {
             let mut eq = Equalizer::new(decoded.sample_rate, decoded.channels);

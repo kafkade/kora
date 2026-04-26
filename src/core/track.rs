@@ -11,7 +11,6 @@ pub struct Track {
 #[derive(Debug, Clone)]
 pub enum TrackSource {
     File(PathBuf),
-    #[allow(dead_code)] // Used in future phases (radio, podcasts)
     Url(String),
 }
 
@@ -29,6 +28,13 @@ impl Track {
     pub fn from_file(path: PathBuf) -> Self {
         Self {
             source: TrackSource::File(path),
+            metadata: None,
+        }
+    }
+
+    pub fn from_url(url: String) -> Self {
+        Self {
+            source: TrackSource::Url(url),
             metadata: None,
         }
     }

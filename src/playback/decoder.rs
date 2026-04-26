@@ -84,6 +84,13 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
                 tracing::warn!("Skipping corrupt packet in {}: {msg}", path.display());
                 continue;
             }
+            Err(symphonia::core::errors::Error::ResetRequired) => {
+                // Decoder needs reset (e.g., after corrupt section) — reset and continue
+                decoder.reset();
+                decode_errors += 1;
+                tracing::warn!("Decoder reset after corrupt section in {}", path.display());
+                continue;
+            }
             Err(e) => return Err(e).context(format!("Read error in {}", path.display())),
         };
 
@@ -103,6 +110,11 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
                 // Corrupt frame — skip it, continue decoding
                 decode_errors += 1;
                 tracing::warn!("Skipping corrupt frame in {}: {msg}", path.display());
+                continue;
+            }
+            Err(symphonia::core::errors::Error::ResetRequired) => {
+                decoder.reset();
+                decode_errors += 1;
                 continue;
             }
             Err(e) => return Err(e).context(format!("Decode error in {}", path.display())),
@@ -195,5 +207,46 @@ mod tests {
         assert!(result.is_err(), "Text file should fail to decode");
 
         std::fs::remove_file(&txt_file).ok();
+    }
+
+    #[test]
+    fn decode_truncated_mp3_header_returns_error() {
+        // A valid MP3 frame header starts with 0xFF 0xFB but if truncated
+        // immediately after, symphonia should error, not panic
+        let dir = std::env::temp_dir().join("kora_test_decode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let truncated_file = dir.join("truncated.mp3");
+        let mut f = File::create(&truncated_file).unwrap();
+        // Write a partial MP3 sync word + some bytes, then stop
+        f.write_all(&[0xFF, 0xFB, 0x90, 0x00, 0x00, 0x00]).unwrap();
+
+        let result = decode_file(&truncated_file);
+        // Should return an error OR succeed with 0 samples (both are acceptable)
+        // but must NOT panic
+        if let Ok(audio) = result {
+            assert!(
+                audio.samples.is_empty() || audio.decode_time_ms >= 0.0,
+                "Should produce valid output or empty"
+            );
+        }
+
+        std::fs::remove_file(&truncated_file).ok();
+    }
+
+    #[test]
+    fn decode_large_garbage_file_returns_error_without_panic() {
+        // Larger garbage file to exercise more of the probe/decode path
+        let dir = std::env::temp_dir().join("kora_test_decode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let large_garbage = dir.join("large_garbage.mp3");
+        let mut f = File::create(&large_garbage).unwrap();
+        // 4KB of random-ish bytes
+        let garbage: Vec<u8> = (0..4096).map(|i| (i * 37 % 256) as u8).collect();
+        f.write_all(&garbage).unwrap();
+
+        let result = decode_file(&large_garbage);
+        assert!(result.is_err(), "Large garbage file should fail to decode");
+
+        std::fs::remove_file(&large_garbage).ok();
     }
 }

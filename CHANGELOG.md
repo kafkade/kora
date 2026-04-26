@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `config.toml.example` shipped in repo with all options documented
 - CLI flags override config values for the session
 - Nord color theme with distinct colors for playback state, playlist, progress bar, and help bar
+- HTTP/HTTPS URL playback: `kora https://example.com/stream.mp3` streams and plays audio
+- Internet radio search via Radio Browser API: `kora --radio "lofi hip hop"` finds and plays stations
+- Custom radio stations via `stations.toml` configuration file
+- `stations.toml.example` shipped in repo with sample stations
 
 ### Fixed
 
