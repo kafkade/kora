@@ -92,6 +92,9 @@ pub enum PlayerCommand {
     ToggleVisualizer,
     #[allow(dead_code)]
     ToggleFullscreenVisualizer,
+    #[allow(dead_code)] // Available for CLI/IPC device listing
+    ListDevices,
+    SetDevice(String),
     Quit,
 }
 
@@ -168,6 +171,7 @@ pub struct Player {
 
     favorites: Favorites,
     sleep_timer: Option<SleepTimer>,
+    device_name: Option<String>,
 
     spectrum: Arc<SpectrumData>,
 
@@ -183,6 +187,7 @@ impl Player {
         volume_db: f32,
         eq_preset: Option<&str>,
         replaygain_mode: ReplayGainMode,
+        device_name: Option<String>,
     ) -> Result<Self> {
         let preset = match eq_preset {
             Some(name) => Some(eq::find_preset(name).with_context(|| {
@@ -236,6 +241,7 @@ impl Player {
             current_rg: None,
             favorites,
             sleep_timer: None,
+            device_name,
             spectrum: Arc::new(SpectrumData::new(32)),
             stop_flag: Arc::new(AtomicBool::new(false)),
             pause_flag: Arc::new(AtomicBool::new(false)),
@@ -350,6 +356,7 @@ impl Player {
         let pause = self.pause_flag.clone();
         let position = self.position.clone();
         let spectrum = self.spectrum.clone();
+        let device_name = self.device_name.clone();
 
         let handle = std::thread::spawn(move || {
             cpal_backend::play_audio_with_position(
@@ -361,6 +368,7 @@ impl Player {
                 &pause,
                 &position.samples_played,
                 &spectrum,
+                device_name.as_deref(),
             )
         });
 
@@ -389,6 +397,7 @@ impl Player {
         let spectrum = self.spectrum.clone();
         let played_next = Arc::new(AtomicBool::new(false));
         let played_next_clone = played_next.clone();
+        let device_name = self.device_name.clone();
 
         let handle = std::thread::spawn(move || {
             cpal_backend::play_audio_gapless(
@@ -402,6 +411,7 @@ impl Player {
                 &position.samples_played,
                 &spectrum,
                 &played_next_clone,
+                device_name.as_deref(),
             )
         });
 
@@ -598,6 +608,14 @@ impl Player {
             }
             PlayerCommand::ToggleVisualizer | PlayerCommand::ToggleFullscreenVisualizer => {
                 // Handled in the TUI layer — no playback state change needed.
+                PlayerAction::None
+            }
+            PlayerCommand::ListDevices => {
+                // Handled in the TUI/CLI layer — no playback state change needed.
+                PlayerAction::None
+            }
+            PlayerCommand::SetDevice(name) => {
+                self.device_name = Some(name);
                 PlayerAction::None
             }
             PlayerCommand::Quit => PlayerAction::Quit,
@@ -927,6 +945,11 @@ impl Player {
         self.repeat
     }
 
+    /// Current audio output device name.
+    pub fn device_name(&self) -> Option<&str> {
+        self.device_name.as_deref()
+    }
+
     /// Return the next track index respecting shuffle order, or `None` at end.
     fn next_index(&self) -> Option<usize> {
         if self.tracks.is_empty() {
@@ -1162,7 +1185,7 @@ mod tests {
     }
 
     fn test_player() -> Player {
-        Player::new(vec![], 0.0, None, ReplayGainMode::Off).unwrap()
+        Player::new(vec![], 0.0, None, ReplayGainMode::Off, None).unwrap()
     }
 
     #[test]
@@ -1387,7 +1410,7 @@ mod tests {
         let tracks: Vec<Track> = (0..count)
             .map(|i| Track::from_file(std::path::PathBuf::from(format!("test_track_{i}.mp3"))))
             .collect();
-        Player::new(tracks, 0.0, None, ReplayGainMode::Off).unwrap()
+        Player::new(tracks, 0.0, None, ReplayGainMode::Off, None).unwrap()
     }
 
     #[test]

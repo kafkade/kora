@@ -25,6 +25,11 @@
 # "album" preserves relative loudness within albums
 # replaygain = "track"
 
+# Preferred audio output device (case-insensitive substring match)
+# Use `kora --list-devices` to see available devices.
+# If the device is not found at startup, falls back to the system default.
+# audio_device = "Headphones"
+
 # Custom EQ presets (in addition to built-in ones)
 # Each preset has a name and 10 band gains in dB (-12 to +12)
 # Bands: 31Hz, 62Hz, 125Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 16kHz

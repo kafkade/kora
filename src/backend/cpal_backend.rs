@@ -9,15 +9,13 @@ use rtrb::RingBuffer;
 use crate::playback::fft::SpectrumData;
 
 /// Information about an available audio output device.
-#[derive(Debug)]
-#[allow(dead_code)] // Used in tests and future device selection UI
+#[derive(Debug, Clone)]
 pub struct AudioDevice {
     pub name: String,
     pub is_default: bool,
 }
 
 /// List all available audio output devices.
-#[allow(dead_code)] // Used in tests and future device selection UI
 pub fn list_devices() -> Result<Vec<AudioDevice>> {
     let host = cpal::default_host();
     let default_name = host
@@ -40,6 +38,49 @@ pub fn list_devices() -> Result<Vec<AudioDevice>> {
         .collect();
 
     Ok(devices)
+}
+
+/// Find an audio output device by name (case-insensitive substring match).
+///
+/// Falls back to the default device with a warning if the named device is not found.
+pub fn find_device_by_name(name: &str) -> Result<cpal::Device> {
+    if name.is_empty() {
+        anyhow::bail!("Device name must not be empty");
+    }
+
+    let host = cpal::default_host();
+    let lower = name.to_ascii_lowercase();
+
+    let device = host
+        .output_devices()
+        .context("Failed to enumerate audio output devices")?
+        .find(|d| {
+            d.description()
+                .ok()
+                .map(|desc| desc.name().to_ascii_lowercase().contains(&lower))
+                .unwrap_or(false)
+        });
+
+    match device {
+        Some(d) => Ok(d),
+        None => {
+            tracing::warn!("Configured audio device '{name}' not found — falling back to default");
+            host.default_output_device()
+                .context("No audio output device found. Check your system audio settings.")
+        }
+    }
+}
+
+/// Resolve the output device: use the named device if provided, otherwise default.
+fn resolve_device(device_name: Option<&str>) -> Result<cpal::Device> {
+    match device_name {
+        Some(name) => find_device_by_name(name),
+        None => {
+            let host = cpal::default_host();
+            host.default_output_device()
+                .context("No audio output device found. Check your system audio settings.")
+        }
+    }
 }
 
 /// Play pre-decoded f32 samples through CPAL.
@@ -159,11 +200,9 @@ pub fn play_audio_with_position(
     pause: &Arc<AtomicBool>,
     samples_played: &AtomicU64,
     spectrum: &Arc<SpectrumData>,
+    device_name: Option<&str>,
 ) -> Result<()> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .context("No audio output device found.")?;
+    let device = resolve_device(device_name)?;
 
     let config = StreamConfig {
         channels: channels as u16,
@@ -269,11 +308,9 @@ pub fn play_audio_gapless(
     samples_played: &AtomicU64,
     spectrum: &Arc<SpectrumData>,
     played_next: &AtomicBool,
+    device_name: Option<&str>,
 ) -> Result<()> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .context("No audio output device found.")?;
+    let device = resolve_device(device_name)?;
 
     let config = StreamConfig {
         channels: channels as u16,
@@ -444,6 +481,32 @@ mod tests {
                     "Unexpected error: {msg}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn find_device_by_empty_name_returns_error() {
+        let result = find_device_by_name("");
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("must not be empty"),
+            "Expected empty-name error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn find_device_by_nonexistent_name_falls_back() {
+        // A name that won't match any real device should fall back to default
+        let result = find_device_by_name("__nonexistent_device_xyz_12345__");
+        // Either falls back to default (Ok) or no default available (Err) — both OK
+        if let Err(e) = &result {
+            let msg = format!("{e:#}");
+            assert!(
+                msg.contains("No audio output device"),
+                "Unexpected error: {msg}"
+            );
         }
     }
 }

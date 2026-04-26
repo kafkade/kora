@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ReplayGain volume normalization: reads tags from ID3v2, Vorbis Comments, and MP4 files
 - ReplayGain applies track gain by default, album gain as option, configurable via `replaygain` in `config.toml`
 - ReplayGain info displayed in TUI status bar when active
+- Audio output device selection: `--list-devices` to list, `--device <NAME>` to select, press `d` to cycle in TUI
+- Default audio device configurable via `audio_device` in `config.toml`
+- Graceful fallback to default device when configured device is disconnected
 
 ### Changed
 
