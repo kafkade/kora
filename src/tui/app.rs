@@ -2,6 +2,8 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -19,6 +21,17 @@ use super::theme::{self, Theme};
 use crate::core::session::Session;
 use crate::core::track::Track;
 use crate::playback::player::{PlaybackState, Player, PlayerAction, PlayerCommand, SleepAction};
+
+/// Block characters for fine-grained bar height rendering (1/8 increments).
+const BAR_CHARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Visualizer display mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisualizerMode {
+    Off,
+    Normal,
+    Fullscreen,
+}
 
 /// Run the TUI application.
 #[allow(dead_code)]
@@ -103,15 +116,67 @@ fn run_loop(
     let mut last_save = Instant::now();
     let mut file_browser: Option<FileBrowser> = None;
     let mut show_eq = false;
+    let mut visualizer_mode = VisualizerMode::Normal;
+
+    // Gapless playback state
+    let mut gapless_played_next: Option<Arc<AtomicBool>> = None;
+    let mut pre_decode_triggered = false;
 
     loop {
         // Draw
-        terminal.draw(|frame| draw(frame, player, theme, file_browser.as_ref(), show_eq))?;
+        terminal.draw(|frame| {
+            draw(
+                frame,
+                player,
+                theme,
+                file_browser.as_ref(),
+                show_eq,
+                visualizer_mode,
+            )
+        })?;
 
         // Tick sleep timer
         if let SleepAction::Stop = player.tick_sleep_timer() {
             let action = player.handle_command(PlayerCommand::Stop);
-            handle_action(action, player, playback_handle)?;
+            handle_action(
+                action,
+                player,
+                playback_handle,
+                &mut gapless_played_next,
+                &mut pre_decode_triggered,
+            )?;
+        }
+
+        // Check if the gapless next-track was played — advance player state
+        if let Some(ref flag) = gapless_played_next
+            && flag.load(Ordering::Relaxed)
+        {
+            // The audio thread transitioned to the next track
+            let action = player.on_track_finished();
+            // on_track_finished already advanced current_index; if it returns
+            // GaplessTransition the samples were already consumed by the audio
+            // thread, so we just update player metadata from the pre-decoded data.
+            match action {
+                PlayerAction::GaplessTransition => {
+                    if let Some(pre) = player.take_next_track_samples() {
+                        player.play_predecoded(pre);
+                        // No new playback thread — audio thread is still running
+                    }
+                }
+                _ => {
+                    // Unexpected — the gapless path should return GaplessTransition
+                    // but handle gracefully
+                    handle_action(
+                        action,
+                        player,
+                        playback_handle,
+                        &mut gapless_played_next,
+                        &mut pre_decode_triggered,
+                    )?;
+                }
+            }
+            gapless_played_next = None;
+            pre_decode_triggered = false;
         }
 
         // Check if playback thread finished (track ended naturally)
@@ -121,8 +186,27 @@ fn run_loop(
             if let Some(h) = playback_handle.take() {
                 let _ = h.join();
             }
+            gapless_played_next = None;
+            pre_decode_triggered = false;
             let action = player.on_track_finished();
-            handle_action(action, player, playback_handle)?;
+            handle_action(
+                action,
+                player,
+                playback_handle,
+                &mut gapless_played_next,
+                &mut pre_decode_triggered,
+            )?;
+        }
+
+        // Pre-decode next track when past 80% of current track
+        if player.state() == PlaybackState::Playing
+            && !pre_decode_triggered
+            && player.playback_progress() > 0.8
+        {
+            pre_decode_triggered = true;
+            if let Err(e) = player.pre_decode_next() {
+                tracing::warn!("Pre-decode failed: {e}");
+            }
         }
 
         // Auto-save session every 30 seconds
@@ -169,7 +253,13 @@ fn run_loop(
                 if let Some(path) = selected_path {
                     let track = Track::from_file(path);
                     let action = player.add_and_play(track);
-                    handle_action(action, player, playback_handle)?;
+                    handle_action(
+                        action,
+                        player,
+                        playback_handle,
+                        &mut gapless_played_next,
+                        &mut pre_decode_triggered,
+                    )?;
                 }
 
                 continue;
@@ -205,7 +295,13 @@ fn run_loop(
                         }
                         return Ok(());
                     }
-                    handle_action(action, player, playback_handle)?;
+                    handle_action(
+                        action,
+                        player,
+                        playback_handle,
+                        &mut gapless_played_next,
+                        &mut pre_decode_triggered,
+                    )?;
                 }
                 continue;
             }
@@ -241,6 +337,21 @@ fn run_loop(
                 KeyCode::Char('z') => Some(PlayerCommand::ToggleShuffle),
                 KeyCode::Char('r') => Some(PlayerCommand::CycleRepeat),
                 KeyCode::Char('S') => Some(PlayerCommand::CycleSleepTimer),
+                KeyCode::Char('v') => {
+                    visualizer_mode = match visualizer_mode {
+                        VisualizerMode::Off => VisualizerMode::Normal,
+                        VisualizerMode::Normal => VisualizerMode::Off,
+                        VisualizerMode::Fullscreen => VisualizerMode::Off,
+                    };
+                    None
+                }
+                KeyCode::Char('V') => {
+                    visualizer_mode = match visualizer_mode {
+                        VisualizerMode::Fullscreen => VisualizerMode::Normal,
+                        _ => VisualizerMode::Fullscreen,
+                    };
+                    None
+                }
                 _ => None,
             };
 
@@ -253,7 +364,13 @@ fn run_loop(
                     }
                     return Ok(());
                 }
-                handle_action(action, player, playback_handle)?;
+                handle_action(
+                    action,
+                    player,
+                    playback_handle,
+                    &mut gapless_played_next,
+                    &mut pre_decode_triggered,
+                )?;
             }
         }
     }
@@ -263,6 +380,8 @@ fn handle_action(
     action: PlayerAction,
     player: &mut Player,
     playback_handle: &mut Option<std::thread::JoinHandle<Result<()>>>,
+    gapless_played_next: &mut Option<Arc<AtomicBool>>,
+    pre_decode_triggered: &mut bool,
 ) -> Result<()> {
     match action {
         PlayerAction::None => {}
@@ -271,8 +390,45 @@ fn handle_action(
             if let Some(h) = playback_handle.take() {
                 let _ = h.join();
             }
-            player.play_current()?;
+            *gapless_played_next = None;
+            *pre_decode_triggered = false;
+
+            // Try to use pre-decoded samples to skip decode time
+            let current_idx = player.current_index();
+            if let Some(pre) = player.take_next_track_samples() {
+                if pre.track_index == current_idx {
+                    tracing::info!(
+                        "Using pre-decoded track [{}] — skipping decode",
+                        current_idx
+                    );
+                    player.play_predecoded(pre);
+                } else {
+                    // Pre-decoded data is for a different track, decode fresh
+                    player.play_current()?;
+                }
+            } else {
+                player.play_current()?;
+            }
             *playback_handle = player.start_playback();
+            player.mark_playback_started();
+        }
+        PlayerAction::GaplessTransition => {
+            // Use pre-decoded samples — eliminates decode latency at track boundary
+            if let Some(h) = playback_handle.take() {
+                let _ = h.join();
+            }
+            *gapless_played_next = None;
+            *pre_decode_triggered = false;
+
+            if let Some(pre) = player.take_next_track_samples() {
+                tracing::info!("Gapless transition to track [{}]", pre.track_index);
+                player.play_predecoded(pre);
+                *playback_handle = player.start_playback();
+            } else {
+                // Fallback: pre-decoded samples missing, decode fresh
+                player.play_current()?;
+                *playback_handle = player.start_playback();
+            }
             player.mark_playback_started();
         }
         PlayerAction::Quit => {}
@@ -286,6 +442,7 @@ fn draw(
     theme: &Theme,
     file_browser: Option<&FileBrowser>,
     show_eq: bool,
+    visualizer_mode: VisualizerMode,
 ) {
     let area = frame.area();
 
@@ -304,7 +461,25 @@ fn draw(
         draw_eq_view(frame, chunks[1], player, theme);
         draw_eq_status_bar(frame, chunks[2], player, theme);
     } else {
-        draw_playlist(frame, chunks[1], player, theme);
+        match visualizer_mode {
+            VisualizerMode::Fullscreen => {
+                draw_visualizer(frame, chunks[1], player, theme);
+            }
+            VisualizerMode::Normal => {
+                let middle = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(60), // Playlist
+                        Constraint::Percentage(40), // Visualizer
+                    ])
+                    .split(chunks[1]);
+                draw_playlist(frame, middle[0], player, theme);
+                draw_visualizer(frame, middle[1], player, theme);
+            }
+            VisualizerMode::Off => {
+                draw_playlist(frame, chunks[1], player, theme);
+            }
+        }
         draw_status_bar(frame, chunks[2], player, theme);
     }
 
@@ -468,6 +643,8 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
         Span::styled(":Shuffle ", theme.help_text),
         Span::styled("r", theme.help_key),
         Span::styled(":Repeat ", theme.help_text),
+        Span::styled("v/V", theme.help_key),
+        Span::styled(":Viz ", theme.help_text),
         Span::styled("S", theme.help_key),
         Span::styled(":Sleep ", theme.help_text),
         Span::styled("q", theme.help_key),
@@ -495,6 +672,81 @@ fn format_duration(d: Duration) -> String {
     let mins = total_secs / 60;
     let secs = total_secs % 60;
     format!("{mins}:{secs:02}")
+}
+
+fn draw_visualizer(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border)
+        .title(" Spectrum ")
+        .title_style(theme.title);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 2 || inner.width < 4 {
+        return;
+    }
+
+    let bars = player.spectrum().read_bars();
+    let num_bars = bars.len();
+    if num_bars == 0 {
+        return;
+    }
+
+    let available_width = inner.width as usize;
+    let chart_height = inner.height as usize;
+
+    // Calculate bar width and spacing
+    let bar_width = (available_width / num_bars).max(1);
+    let total_used = bar_width * num_bars;
+    let left_pad = (available_width.saturating_sub(total_used)) / 2;
+
+    let buf = frame.buffer_mut();
+    let accent_style = Style::default().fg(theme.accent);
+    let dim_style = Style::default().fg(theme.dim);
+
+    for (i, &magnitude) in bars.iter().enumerate() {
+        let x_start = inner.x + left_pad as u16 + (i * bar_width) as u16;
+        if x_start >= inner.x + inner.width {
+            break;
+        }
+
+        // Map magnitude (0.0..1.0) to total height in eighths
+        let total_eighths = (magnitude * chart_height as f32 * 8.0).round() as usize;
+        let full_rows = total_eighths / 8;
+        let remainder = total_eighths % 8;
+
+        // Draw from bottom up
+        for row in 0..chart_height {
+            let y = inner.y + inner.height - 1 - row as u16;
+
+            // Determine what character to draw at this row
+            let ch = if row < full_rows {
+                '█'
+            } else if row == full_rows && remainder > 0 {
+                BAR_CHARS[remainder - 1]
+            } else {
+                ' '
+            };
+
+            let style = if ch != ' ' { accent_style } else { dim_style };
+
+            // Draw across bar width (leave 1-char gap between bars if width > 2)
+            let draw_width = if bar_width > 2 {
+                bar_width - 1
+            } else {
+                bar_width
+            };
+
+            for col in 0..draw_width {
+                let x = x_start + col as u16;
+                if x < inner.x + inner.width {
+                    buf[(x, y)].set_char(ch).set_style(style);
+                }
+            }
+        }
+    }
 }
 
 fn draw_eq_view(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme) {

@@ -18,6 +18,7 @@ use crate::core::track::{Track, TrackSource};
 use crate::core::types::Volume;
 use crate::playback::decoder;
 use crate::playback::eq::{self, EqPreset, Equalizer};
+use crate::playback::fft::SpectrumData;
 use crate::playback::stream_decoder;
 
 /// Playback state visible to the TUI.
@@ -83,6 +84,10 @@ pub enum PlayerCommand {
     EqBandDown,
     EqBandLeft,
     EqBandRight,
+    #[allow(dead_code)]
+    ToggleVisualizer,
+    #[allow(dead_code)]
+    ToggleFullscreenVisualizer,
     Quit,
 }
 
@@ -117,6 +122,15 @@ struct SharedPosition {
     total_samples: AtomicU64,
 }
 
+/// Pre-decoded next track data for gapless playback.
+#[derive(Debug)]
+pub struct PreDecodedTrack {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub track_index: usize,
+}
+
 /// The playback controller manages the queue and audio pipeline.
 pub struct Player {
     tracks: Vec<Track>,
@@ -140,8 +154,13 @@ pub struct Player {
     playback_start: Option<Instant>,
     pause_offset: Duration,
 
+    // Gapless playback: pre-decoded next track
+    next_track_samples: Option<PreDecodedTrack>,
+
     favorites: Favorites,
     sleep_timer: Option<SleepTimer>,
+
+    spectrum: Arc<SpectrumData>,
 
     stop_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
@@ -197,8 +216,10 @@ impl Player {
             playback_position: Duration::ZERO,
             playback_start: None,
             pause_offset: Duration::ZERO,
+            next_track_samples: None,
             favorites,
             sleep_timer: None,
+            spectrum: Arc::new(SpectrumData::new(32)),
             stop_flag: Arc::new(AtomicBool::new(false)),
             pause_flag: Arc::new(AtomicBool::new(false)),
             shared_volume: Arc::new(AtomicU32::new(initial_linear.to_bits())),
@@ -223,21 +244,8 @@ impl Player {
                 .with_context(|| format!("Failed to stream {url}"))?,
         };
 
-        let samples = if let Some(gains) = self.custom_gains {
-            let mut eq = Equalizer::new(decoded.sample_rate, decoded.channels);
-            eq.set_gains(gains);
-            let mut buf = decoded.samples;
-            eq.process(&mut buf, decoded.channels);
-            buf
-        } else if let Some(p) = self.eq_preset {
-            let mut eq = Equalizer::new(decoded.sample_rate, decoded.channels);
-            eq.apply_preset(p);
-            let mut buf = decoded.samples;
-            eq.process(&mut buf, decoded.channels);
-            buf
-        } else {
-            decoded.samples
-        };
+        let samples =
+            self.apply_eq_to_samples(decoded.samples, decoded.sample_rate, decoded.channels);
 
         let total_samples = samples.len() as u64;
         let sample_rate = decoded.sample_rate;
@@ -266,6 +274,31 @@ impl Player {
         Ok(())
     }
 
+    /// Load pre-decoded track data into the player without re-decoding.
+    /// Used for gapless transitions where the next track was already decoded.
+    pub fn play_predecoded(&mut self, pre: PreDecodedTrack) {
+        let total_samples = pre.samples.len() as u64;
+        self.current_duration = Duration::from_secs_f64(
+            pre.samples.len() as f64 / (pre.sample_rate as f64 * pre.channels as f64),
+        );
+        self.current_sample_rate = pre.sample_rate;
+        self.current_channels = pre.channels;
+        self.current_samples = Some(pre.samples);
+        self.playback_position = Duration::ZERO;
+        self.pause_offset = Duration::ZERO;
+
+        self.position
+            .total_samples
+            .store(total_samples, Ordering::Relaxed);
+        self.position.samples_played.store(0, Ordering::Relaxed);
+
+        self.shared_volume
+            .store(self.volume.as_linear().to_bits(), Ordering::Relaxed);
+
+        self.state = PlaybackState::Playing;
+        self.playback_start = Some(Instant::now());
+    }
+
     /// Start non-blocking playback of the current loaded samples.
     /// Returns a JoinHandle that completes when playback finishes.
     pub fn start_playback(&mut self) -> Option<std::thread::JoinHandle<Result<()>>> {
@@ -280,6 +313,7 @@ impl Player {
         let stop = self.stop_flag.clone();
         let pause = self.pause_flag.clone();
         let position = self.position.clone();
+        let spectrum = self.spectrum.clone();
 
         let handle = std::thread::spawn(move || {
             cpal_backend::play_audio_with_position(
@@ -290,10 +324,52 @@ impl Player {
                 &stop,
                 &pause,
                 &position.samples_played,
+                &spectrum,
             )
         });
 
         Some(handle)
+    }
+
+    /// Start gapless playback: play current samples then seamlessly continue
+    /// with the next track's samples without tearing down the CPAL stream.
+    /// Returns a (JoinHandle, Arc<AtomicBool>) — the bool signals whether
+    /// the next track was actually played (allows TUI to advance state).
+    #[allow(dead_code)] // Available for true zero-gap playback in future
+    pub fn start_playback_gapless(
+        &mut self,
+        next_samples: Vec<f32>,
+    ) -> Option<(std::thread::JoinHandle<Result<()>>, Arc<AtomicBool>)> {
+        let samples = self.current_samples.take()?;
+        let sample_rate = self.current_sample_rate;
+        let channels = self.current_channels;
+        let volume = self.shared_volume.clone();
+
+        self.stop_flag.store(false, Ordering::Relaxed);
+        self.pause_flag.store(false, Ordering::Relaxed);
+        let stop = self.stop_flag.clone();
+        let pause = self.pause_flag.clone();
+        let position = self.position.clone();
+        let spectrum = self.spectrum.clone();
+        let played_next = Arc::new(AtomicBool::new(false));
+        let played_next_clone = played_next.clone();
+
+        let handle = std::thread::spawn(move || {
+            cpal_backend::play_audio_gapless(
+                &samples,
+                Some(&next_samples),
+                sample_rate,
+                channels,
+                &volume,
+                &stop,
+                &pause,
+                &position.samples_played,
+                &spectrum,
+                &played_next_clone,
+            )
+        });
+
+        Some((handle, played_next))
     }
 
     /// Handle a command from the TUI.
@@ -322,10 +398,12 @@ impl Player {
                 self.playback_position = Duration::ZERO;
                 self.pause_offset = Duration::ZERO;
                 self.stop_flag.store(true, Ordering::Relaxed);
+                self.clear_predecoded();
                 PlayerAction::None
             }
             PlayerCommand::NextTrack => {
                 self.stop_flag.store(true, Ordering::Relaxed);
+                self.clear_predecoded();
                 if let Some(next) = self.next_index() {
                     self.current_index = next;
                     PlayerAction::LoadAndPlay
@@ -336,6 +414,7 @@ impl Player {
             }
             PlayerCommand::PrevTrack => {
                 self.stop_flag.store(true, Ordering::Relaxed);
+                self.clear_predecoded();
                 // If more than 3 seconds in, restart current track
                 if self.current_position().as_secs() > 3 || self.current_index == 0 {
                     PlayerAction::LoadAndPlay
@@ -367,10 +446,12 @@ impl Player {
                 if self.shuffle {
                     self.shuffle_order = generate_shuffle_order(self.tracks.len());
                 }
+                self.clear_predecoded();
                 PlayerAction::None
             }
             PlayerCommand::CycleRepeat => {
                 self.repeat = self.repeat.cycle();
+                self.clear_predecoded();
                 PlayerAction::None
             }
             PlayerCommand::ToggleFavorite => {
@@ -471,6 +552,10 @@ impl Player {
                 }
                 PlayerAction::None
             }
+            PlayerCommand::ToggleVisualizer | PlayerCommand::ToggleFullscreenVisualizer => {
+                // Handled in the TUI layer — no playback state change needed.
+                PlayerAction::None
+            }
             PlayerCommand::Quit => PlayerAction::Quit,
         }
     }
@@ -543,9 +628,21 @@ impl Player {
         self.eq_selected_band
     }
 
+    /// Get a reference to the shared spectrum data for the visualizer.
+    pub fn spectrum(&self) -> &Arc<SpectrumData> {
+        &self.spectrum
+    }
+
+    /// Get the sample rate of the currently loaded track.
+    #[allow(dead_code)]
+    pub fn current_sample_rate(&self) -> u32 {
+        self.current_sample_rate
+    }
+
     /// Add a track to the queue and start playing it immediately.
     pub fn add_and_play(&mut self, track: Track) -> PlayerAction {
         self.stop_flag.store(true, Ordering::Relaxed);
+        self.clear_predecoded();
         self.tracks.push(track);
         self.current_index = self.tracks.len() - 1;
         PlayerAction::LoadAndPlay
@@ -564,6 +661,23 @@ impl Player {
 
         if let Some(next) = self.next_index() {
             self.current_index = next;
+            // Check if we have a pre-decoded track that matches
+            if let Some(ref pre) = self.next_track_samples {
+                if pre.track_index == self.current_index
+                    && pre.sample_rate == self.current_sample_rate
+                    && pre.channels == self.current_channels
+                {
+                    return PlayerAction::GaplessTransition;
+                } else if pre.track_index == self.current_index {
+                    tracing::info!(
+                        "Gapless not possible: format mismatch ({}Hz/{}ch vs {}Hz/{}ch)",
+                        self.current_sample_rate,
+                        self.current_channels,
+                        pre.sample_rate,
+                        pre.channels,
+                    );
+                }
+            }
             PlayerAction::LoadAndPlay
         } else if self.repeat == RepeatMode::All && !self.tracks.is_empty() {
             // Wrap to beginning (or first in shuffle order)
@@ -572,6 +686,14 @@ impl Player {
             } else {
                 0
             };
+            // Check gapless for wrap-around too
+            if let Some(ref pre) = self.next_track_samples
+                && pre.track_index == self.current_index
+                && pre.sample_rate == self.current_sample_rate
+                && pre.channels == self.current_channels
+            {
+                return PlayerAction::GaplessTransition;
+            }
             PlayerAction::LoadAndPlay
         } else {
             self.state = PlaybackState::Stopped;
@@ -582,6 +704,135 @@ impl Player {
     /// Set playback start time (called after thread spawn).
     pub fn mark_playback_started(&mut self) {
         self.playback_start = Some(Instant::now());
+    }
+
+    /// Return playback progress as a ratio (0.0–1.0).
+    pub fn playback_progress(&self) -> f64 {
+        let duration = self.current_duration.as_secs_f64();
+        if duration <= 0.0 {
+            return 0.0;
+        }
+        (self.current_position().as_secs_f64() / duration).min(1.0)
+    }
+
+    /// Pre-decode the next track in the queue for gapless playback.
+    ///
+    /// Decodes the next track (respecting shuffle/repeat) and stores it in
+    /// `next_track_samples`. Applies EQ if active. No-op if the queue is empty,
+    /// there's no next track, or a track is already pre-decoded.
+    pub fn pre_decode_next(&mut self) -> Result<()> {
+        // Already pre-decoded
+        if self.next_track_samples.is_some() {
+            return Ok(());
+        }
+
+        let next_idx = self.resolve_next_index_for_predecode();
+        let next_idx = match next_idx {
+            Some(idx) => idx,
+            None => return Ok(()),
+        };
+
+        let track = match self.tracks.get(next_idx) {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+
+        // Only pre-decode local files — streaming URLs may be live/infinite
+        let decoded = match &track.source {
+            TrackSource::File(p) => match decoder::decode_file(p) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!("Failed to pre-decode next track: {e}");
+                    return Ok(());
+                }
+            },
+            TrackSource::Url(_) => return Ok(()),
+        };
+
+        let samples =
+            self.apply_eq_to_samples(decoded.samples, decoded.sample_rate, decoded.channels);
+
+        tracing::info!(
+            "Pre-decoded next track [{}] ({}Hz, {}ch)",
+            next_idx,
+            decoded.sample_rate,
+            decoded.channels
+        );
+
+        self.next_track_samples = Some(PreDecodedTrack {
+            samples,
+            sample_rate: decoded.sample_rate,
+            channels: decoded.channels,
+            track_index: next_idx,
+        });
+
+        Ok(())
+    }
+
+    /// Whether a pre-decoded next track is available and compatible for gapless.
+    #[allow(dead_code)] // Used by tests and future true-gapless path
+    pub fn has_gapless_next(&self) -> bool {
+        match &self.next_track_samples {
+            Some(pre) => {
+                pre.sample_rate == self.current_sample_rate && pre.channels == self.current_channels
+            }
+            None => false,
+        }
+    }
+
+    /// Take the pre-decoded next track samples (consuming them).
+    pub fn take_next_track_samples(&mut self) -> Option<PreDecodedTrack> {
+        self.next_track_samples.take()
+    }
+
+    /// Resolve the next track index for pre-decoding (accounts for repeat/shuffle).
+    fn resolve_next_index_for_predecode(&self) -> Option<usize> {
+        if self.tracks.is_empty() {
+            return None;
+        }
+        if self.repeat == RepeatMode::One {
+            return Some(self.current_index);
+        }
+        if let Some(next) = self.next_index() {
+            return Some(next);
+        }
+        if self.repeat == RepeatMode::All && !self.tracks.is_empty() {
+            return Some(if self.shuffle {
+                self.shuffle_order.first().copied().unwrap_or(0)
+            } else {
+                0
+            });
+        }
+        None
+    }
+
+    /// Apply EQ processing to samples based on current preset/custom gains.
+    fn apply_eq_to_samples(
+        &self,
+        samples: Vec<f32>,
+        sample_rate: u32,
+        channels: usize,
+    ) -> Vec<f32> {
+        if let Some(gains) = self.custom_gains {
+            let mut eq = Equalizer::new(sample_rate, channels);
+            eq.set_gains(gains);
+            let mut buf = samples;
+            eq.process(&mut buf, channels);
+            buf
+        } else if let Some(p) = self.eq_preset {
+            let mut eq = Equalizer::new(sample_rate, channels);
+            eq.apply_preset(p);
+            let mut buf = samples;
+            eq.process(&mut buf, channels);
+            buf
+        } else {
+            samples
+        }
+    }
+
+    /// Invalidate pre-decoded samples (e.g. when the user skips tracks manually).
+    pub fn clear_predecoded(&mut self) {
+        self.next_track_samples = None;
     }
 
     /// Get the track list for display.
@@ -774,6 +1025,8 @@ impl Player {
 pub enum PlayerAction {
     None,
     LoadAndPlay,
+    /// Transition to the next track gaplessly using pre-decoded samples.
+    GaplessTransition,
     Quit,
 }
 
@@ -1052,5 +1305,206 @@ mod tests {
         // Cycling preset resets custom
         player.handle_command(PlayerCommand::CycleEqPreset);
         assert_ne!(player.eq_display_name(), "Custom");
+    }
+
+    // --- Gapless playback tests ---
+
+    fn test_player_with_tracks(count: usize) -> Player {
+        let tracks: Vec<Track> = (0..count)
+            .map(|i| Track::from_file(std::path::PathBuf::from(format!("test_track_{i}.mp3"))))
+            .collect();
+        Player::new(tracks, 0.0, None).unwrap()
+    }
+
+    #[test]
+    fn pre_decode_no_next_track_is_noop() {
+        // Single track, no next → pre_decode_next should be a no-op
+        let mut player = test_player_with_tracks(1);
+        let result = player.pre_decode_next();
+        assert!(result.is_ok());
+        assert!(player.next_track_samples.is_none());
+    }
+
+    #[test]
+    fn pre_decode_empty_queue_is_noop() {
+        let mut player = test_player();
+        let result = player.pre_decode_next();
+        assert!(result.is_ok());
+        assert!(player.next_track_samples.is_none());
+    }
+
+    #[test]
+    fn pre_decode_already_decoded_is_noop() {
+        let mut player = test_player_with_tracks(3);
+        // Manually set pre-decoded data
+        player.next_track_samples = Some(PreDecodedTrack {
+            samples: vec![0.0; 100],
+            sample_rate: 44100,
+            channels: 2,
+            track_index: 1,
+        });
+        // Should not overwrite existing pre-decoded data
+        let result = player.pre_decode_next();
+        assert!(result.is_ok());
+        assert!(player.next_track_samples.is_some());
+        assert_eq!(player.next_track_samples.as_ref().unwrap().track_index, 1);
+    }
+
+    #[test]
+    fn gapless_fallback_different_sample_rate() {
+        let mut player = test_player_with_tracks(2);
+        player.current_sample_rate = 44100;
+        player.current_channels = 2;
+        // Set up pre-decoded with different sample rate
+        player.next_track_samples = Some(PreDecodedTrack {
+            samples: vec![0.0; 100],
+            sample_rate: 48000,
+            channels: 2,
+            track_index: 1,
+        });
+        assert!(
+            !player.has_gapless_next(),
+            "Gapless should not be possible with different sample rates"
+        );
+    }
+
+    #[test]
+    fn gapless_fallback_different_channels() {
+        let mut player = test_player_with_tracks(2);
+        player.current_sample_rate = 44100;
+        player.current_channels = 2;
+        // Set up pre-decoded with different channel count
+        player.next_track_samples = Some(PreDecodedTrack {
+            samples: vec![0.0; 100],
+            sample_rate: 44100,
+            channels: 1,
+            track_index: 1,
+        });
+        assert!(
+            !player.has_gapless_next(),
+            "Gapless should not be possible with different channel counts"
+        );
+    }
+
+    #[test]
+    fn gapless_compatible_formats() {
+        let mut player = test_player_with_tracks(2);
+        player.current_sample_rate = 44100;
+        player.current_channels = 2;
+        player.next_track_samples = Some(PreDecodedTrack {
+            samples: vec![0.0; 100],
+            sample_rate: 44100,
+            channels: 2,
+            track_index: 1,
+        });
+        assert!(
+            player.has_gapless_next(),
+            "Gapless should work with matching formats"
+        );
+    }
+
+    #[test]
+    fn on_track_finished_returns_gapless_transition() {
+        let mut player = test_player_with_tracks(3);
+        player.state = PlaybackState::Playing;
+        player.current_sample_rate = 44100;
+        player.current_channels = 2;
+        // Pre-decode track 1 (next track)
+        player.next_track_samples = Some(PreDecodedTrack {
+            samples: vec![0.5; 200],
+            sample_rate: 44100,
+            channels: 2,
+            track_index: 1,
+        });
+        let action = player.on_track_finished();
+        assert!(
+            matches!(action, PlayerAction::GaplessTransition),
+            "Should return GaplessTransition when pre-decoded data matches"
+        );
+        assert_eq!(player.current_index, 1);
+    }
+
+    #[test]
+    fn on_track_finished_falls_back_on_format_mismatch() {
+        let mut player = test_player_with_tracks(3);
+        player.state = PlaybackState::Playing;
+        player.current_sample_rate = 44100;
+        player.current_channels = 2;
+        // Pre-decode track 1 but with different sample rate
+        player.next_track_samples = Some(PreDecodedTrack {
+            samples: vec![0.5; 200],
+            sample_rate: 48000,
+            channels: 2,
+            track_index: 1,
+        });
+        let action = player.on_track_finished();
+        assert!(
+            matches!(action, PlayerAction::LoadAndPlay),
+            "Should fall back to LoadAndPlay on format mismatch"
+        );
+    }
+
+    #[test]
+    fn play_predecoded_loads_correctly() {
+        let mut player = test_player_with_tracks(2);
+        let pre = PreDecodedTrack {
+            samples: vec![0.5; 88200],
+            sample_rate: 44100,
+            channels: 2,
+            track_index: 1,
+        };
+        player.play_predecoded(pre);
+        assert_eq!(player.current_sample_rate, 44100);
+        assert_eq!(player.current_channels, 2);
+        assert!(player.current_samples.is_some());
+        assert_eq!(player.current_samples.as_ref().unwrap().len(), 88200);
+        assert_eq!(player.state(), PlaybackState::Playing);
+        assert!(player.duration().as_secs_f64() > 0.0);
+    }
+
+    #[test]
+    fn clear_predecoded_removes_data() {
+        let mut player = test_player_with_tracks(2);
+        player.next_track_samples = Some(PreDecodedTrack {
+            samples: vec![0.0; 100],
+            sample_rate: 44100,
+            channels: 2,
+            track_index: 1,
+        });
+        player.clear_predecoded();
+        assert!(player.next_track_samples.is_none());
+    }
+
+    #[test]
+    fn manual_next_clears_predecoded() {
+        let mut player = test_player_with_tracks(3);
+        player.next_track_samples = Some(PreDecodedTrack {
+            samples: vec![0.0; 100],
+            sample_rate: 44100,
+            channels: 2,
+            track_index: 1,
+        });
+        player.handle_command(PlayerCommand::NextTrack);
+        assert!(player.next_track_samples.is_none());
+    }
+
+    #[test]
+    fn playback_progress_zero_when_stopped() {
+        let player = test_player();
+        assert_eq!(player.playback_progress(), 0.0);
+    }
+
+    #[test]
+    fn take_next_track_samples_consumes() {
+        let mut player = test_player_with_tracks(2);
+        player.next_track_samples = Some(PreDecodedTrack {
+            samples: vec![0.0; 100],
+            sample_rate: 44100,
+            channels: 2,
+            track_index: 1,
+        });
+        let taken = player.take_next_track_samples();
+        assert!(taken.is_some());
+        assert!(player.next_track_samples.is_none());
     }
 }
