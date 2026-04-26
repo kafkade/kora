@@ -19,6 +19,7 @@ use crate::core::types::Volume;
 use crate::playback::decoder;
 use crate::playback::eq::{self, EqPreset, Equalizer};
 use crate::playback::fft::SpectrumData;
+use crate::playback::lyrics::{self, Lyrics};
 use crate::playback::replaygain::{self, ReplayGainInfo, ReplayGainMode};
 use crate::playback::speed;
 use crate::playback::stream_decoder;
@@ -172,6 +173,7 @@ pub struct Player {
     favorites: Favorites,
     sleep_timer: Option<SleepTimer>,
     device_name: Option<String>,
+    current_lyrics: Lyrics,
 
     spectrum: Arc<SpectrumData>,
 
@@ -242,6 +244,7 @@ impl Player {
             favorites,
             sleep_timer: None,
             device_name,
+            current_lyrics: Lyrics::default(),
             spectrum: Arc::new(SpectrumData::new(32)),
             stop_flag: Arc::new(AtomicBool::new(false)),
             pause_flag: Arc::new(AtomicBool::new(false)),
@@ -266,6 +269,9 @@ impl Player {
             TrackSource::Url(url) => stream_decoder::decode_url(url)
                 .with_context(|| format!("Failed to stream {url}"))?,
         };
+
+        // Load lyrics for the new track
+        self.current_lyrics = lyrics::load_lyrics_for_track(track);
 
         let mut samples = decoded.samples;
 
@@ -319,6 +325,11 @@ impl Player {
     /// Load pre-decoded track data into the player without re-decoding.
     /// Used for gapless transitions where the next track was already decoded.
     pub fn play_predecoded(&mut self, pre: PreDecodedTrack) {
+        // Load lyrics for the new track
+        if let Some(track) = self.tracks.get(self.current_index) {
+            self.current_lyrics = lyrics::load_lyrics_for_track(track);
+        }
+
         let total_samples = pre.samples.len() as u64;
         self.current_duration = Duration::from_secs_f64(
             pre.samples.len() as f64 / (pre.sample_rate as f64 * pre.channels as f64),
@@ -645,6 +656,17 @@ impl Player {
     /// Get current track (if any).
     pub fn current_track(&self) -> Option<&Track> {
         self.tracks.get(self.current_index)
+    }
+
+    /// Get lyrics for the current track.
+    pub fn lyrics(&self) -> &Lyrics {
+        &self.current_lyrics
+    }
+
+    /// Check if the current track has lyrics loaded.
+    #[allow(dead_code)] // Available for CLI/IPC use
+    pub fn has_lyrics(&self) -> bool {
+        !self.current_lyrics.lines.is_empty()
     }
 
     /// Get current track index and total count.

@@ -62,7 +62,7 @@ kora --list-eq-presets
 
 ## Supported Formats
 
-MP3, FLAC, OGG Vorbis, Opus, WAV — decoded natively in Rust via [symphonia](https://github.com/pdeljanov/Symphonia) (no C dependencies).
+MP3, FLAC, OGG Vorbis, Opus, WAV, AAC, ALAC (M4A) — decoded natively in Rust via [symphonia](https://github.com/pdeljanov/Symphonia) (no C dependencies).
 
 ## Install
 

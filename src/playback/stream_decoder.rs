@@ -57,7 +57,7 @@ pub fn content_type_to_hint(content_type: &str) -> Option<&'static str> {
         "audio/wav" | "audio/x-wav" | "audio/wave" => Some("wav"),
         "audio/opus" => Some("opus"),
         "audio/aac" | "audio/x-aac" => Some("aac"),
-        "audio/mp4" | "audio/x-m4a" => Some("m4a"),
+        "audio/mp4" | "audio/x-m4a" | "audio/alac" => Some("m4a"),
         _ => None,
     }
 }
@@ -315,6 +315,7 @@ mod tests {
     fn content_type_maps_audio_m4a() {
         assert_eq!(content_type_to_hint("audio/mp4"), Some("m4a"));
         assert_eq!(content_type_to_hint("audio/x-m4a"), Some("m4a"));
+        assert_eq!(content_type_to_hint("audio/alac"), Some("m4a"));
     }
 
     #[test]

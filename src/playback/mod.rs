@@ -3,6 +3,7 @@ pub mod dsp;
 pub mod engine;
 pub mod eq;
 pub mod fft;
+pub mod lyrics;
 pub mod player;
 pub mod replaygain;
 pub mod speed;
