@@ -10,6 +10,9 @@
 
 mod backend;
 mod core;
+mod ipc;
+#[cfg(feature = "media-controls")]
+mod media_controls;
 mod playback;
 mod providers;
 mod tui;
@@ -17,7 +20,7 @@ mod tui;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use crate::core::track::Track;
 use crate::playback::stream_decoder;
@@ -26,9 +29,14 @@ use crate::playback::stream_decoder;
 #[command(
     name = "kora",
     version,
-    about = "A fast, multi-source terminal audio player"
+    about = "A fast, multi-source terminal audio player",
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
+    /// Remote control subcommand
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+
     /// Files, directories, or URLs to play
     #[arg(value_name = "INPUT")]
     inputs: Vec<String>,
@@ -82,6 +90,33 @@ struct Cli {
     device: Option<String>,
 }
 
+#[derive(Subcommand)]
+enum CliCommand {
+    /// Send play command to running kora instance
+    Play,
+    /// Send pause command to running kora instance
+    Pause,
+    /// Toggle play/pause on running kora instance
+    Toggle,
+    /// Send stop command to running kora instance
+    Stop,
+    /// Skip to next track
+    Next,
+    /// Skip to previous track
+    Prev,
+    /// Set volume in dB (e.g., kora volume -- -3.0)
+    Volume {
+        /// Volume level in dB
+        db: f32,
+    },
+    /// Get player status
+    Status {
+        /// Output status as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -91,6 +126,12 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Handle IPC subcommands (thin client mode)
+    if let Some(cmd) = cli.command {
+        return handle_ipc_command(cmd);
+    }
+
     let config = core::config::KoraConfig::load()?;
 
     tracing::debug!(
@@ -262,6 +303,41 @@ fn main() -> Result<()> {
     let player =
         playback::player::Player::new(tracks, volume, eq_preset.as_deref(), rg_mode, device_name)?;
     tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
+
+    Ok(())
+}
+
+fn handle_ipc_command(cmd: CliCommand) -> Result<()> {
+    use crate::ipc::client::send_command;
+    use crate::ipc::protocol::IpcRequest;
+
+    let is_status = matches!(cmd, CliCommand::Status { .. });
+
+    let request = match cmd {
+        CliCommand::Play => IpcRequest::Play,
+        CliCommand::Pause => IpcRequest::Pause,
+        CliCommand::Toggle => IpcRequest::Toggle,
+        CliCommand::Stop => IpcRequest::Stop,
+        CliCommand::Next => IpcRequest::Next,
+        CliCommand::Prev => IpcRequest::Prev,
+        CliCommand::Volume { db } => IpcRequest::Volume { db },
+        CliCommand::Status { .. } => IpcRequest::Status,
+    };
+
+    let response = send_command(&request)?;
+
+    if is_status {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&response).context("Failed to format response")?
+        );
+    } else if !response.ok {
+        eprintln!(
+            "Error: {}",
+            response.error.as_deref().unwrap_or("unknown error")
+        );
+        std::process::exit(1);
+    }
 
     Ok(())
 }

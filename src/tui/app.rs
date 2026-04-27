@@ -89,6 +89,21 @@ pub fn run_with_theme(
         .unwrap_or(0);
     let mut theme = themes[theme_index].clone();
     let mut terminal = ratatui::init();
+
+    // Start IPC server for remote control
+    let ipc_stop = Arc::new(AtomicBool::new(false));
+    let ipc_rx = match crate::ipc::server::start_ipc_server(ipc_stop.clone()) {
+        Ok(rx) => Some(rx),
+        Err(e) => {
+            tracing::warn!("Failed to start IPC server: {e}");
+            None
+        }
+    };
+
+    // Initialize OS media controls (MPRIS/SMTC/MediaRemote)
+    #[cfg(feature = "media-controls")]
+    let mut media_controls = crate::media_controls::init_media_controls();
+
     let result = run_loop(
         &mut terminal,
         &mut player,
@@ -96,7 +111,13 @@ pub fn run_with_theme(
         &mut theme,
         &themes,
         &mut theme_index,
+        #[cfg(feature = "media-controls")]
+        &mut media_controls,
+        ipc_rx.as_ref(),
     );
+
+    // Stop IPC server
+    ipc_stop.store(true, Ordering::Relaxed);
 
     // Restore terminal
     ratatui::restore();
@@ -105,6 +126,7 @@ pub fn run_with_theme(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_loop(
     terminal: &mut DefaultTerminal,
     player: &mut Player,
@@ -112,6 +134,11 @@ fn run_loop(
     theme: &mut Theme,
     themes: &[Theme],
     theme_index: &mut usize,
+    #[cfg(feature = "media-controls")] media_controls: &mut Option<(
+        souvlaki::MediaControls,
+        std::sync::mpsc::Receiver<souvlaki::MediaControlEvent>,
+    )>,
+    ipc_rx: Option<&std::sync::mpsc::Receiver<crate::ipc::server::IpcMessage>>,
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let save_interval = Duration::from_secs(30);
@@ -126,6 +153,21 @@ fn run_loop(
     // Gapless playback state
     let mut gapless_played_next: Option<Arc<AtomicBool>> = None;
     let mut pre_decode_triggered = false;
+
+    // Track the last known track index + state for media controls updates
+    #[cfg(feature = "media-controls")]
+    let mut last_media_track_index: Option<usize> = None;
+    #[cfg(feature = "media-controls")]
+    let mut last_media_playing: Option<bool> = None;
+
+    // Send initial metadata/playback state to OS media controls
+    #[cfg(feature = "media-controls")]
+    sync_media_controls(
+        player,
+        media_controls,
+        &mut last_media_track_index,
+        &mut last_media_playing,
+    );
 
     loop {
         // Draw
@@ -230,6 +272,53 @@ fn run_loop(
                 tracing::warn!("Failed to auto-save session: {e}");
             }
             last_save = Instant::now();
+        }
+
+        // Process OS media key events (MPRIS / SMTC / MediaRemote)
+        #[cfg(feature = "media-controls")]
+        if let Some((controls, rx)) = media_controls.as_mut() {
+            while let Ok(event) = rx.try_recv() {
+                if let Some(cmd) = crate::media_controls::map_media_event(&event) {
+                    let action = player.handle_command(cmd);
+                    if matches!(action, PlayerAction::Quit) {
+                        if let Err(e) = player.save_session() {
+                            tracing::warn!("Failed to save session on quit: {e}");
+                        }
+                        return Ok(());
+                    }
+                    handle_action(
+                        action,
+                        player,
+                        playback_handle,
+                        &mut gapless_played_next,
+                        &mut pre_decode_triggered,
+                    )?;
+                }
+            }
+            let _ = controls;
+        }
+
+        // Sync media controls state after any changes
+        #[cfg(feature = "media-controls")]
+        sync_media_controls(
+            player,
+            media_controls,
+            &mut last_media_track_index,
+            &mut last_media_playing,
+        );
+
+        // Process IPC remote control messages
+        if let Some(rx) = ipc_rx {
+            while let Ok(msg) = rx.try_recv() {
+                let response = handle_ipc_request(
+                    &msg.request,
+                    player,
+                    playback_handle,
+                    &mut gapless_played_next,
+                    &mut pre_decode_triggered,
+                );
+                let _ = msg.response_tx.send(response);
+            }
         }
 
         // Poll for keyboard input
@@ -519,6 +608,157 @@ fn run_loop(
                 )?;
             }
         }
+    }
+}
+
+/// Sync OS media controls with current player state (metadata + playback).
+/// Only sends updates when something actually changed to avoid unnecessary IPC.
+#[cfg(feature = "media-controls")]
+fn sync_media_controls(
+    player: &Player,
+    media_controls: &mut Option<(
+        souvlaki::MediaControls,
+        std::sync::mpsc::Receiver<souvlaki::MediaControlEvent>,
+    )>,
+    last_track_index: &mut Option<usize>,
+    last_playing: &mut Option<bool>,
+) {
+    let Some((controls, _)) = media_controls.as_mut() else {
+        return;
+    };
+
+    let (current_idx, _) = player.queue_position();
+    let is_playing = player.state() == PlaybackState::Playing;
+
+    // Update metadata when the track changes
+    if *last_track_index != Some(current_idx) {
+        *last_track_index = Some(current_idx);
+        if let Some(track) = player.current_track() {
+            let meta = track.metadata.as_ref();
+            crate::media_controls::update_metadata(
+                controls,
+                meta.and_then(|m| m.title.as_deref()),
+                meta.and_then(|m| m.artist.as_deref()),
+                meta.and_then(|m| m.album.as_deref()),
+                meta.and_then(|m| m.duration),
+            );
+        }
+    }
+
+    // Update playback state when it changes
+    if *last_playing != Some(is_playing) {
+        *last_playing = Some(is_playing);
+        let position = if player.duration().as_secs() > 0 {
+            Some(player.current_position())
+        } else {
+            None
+        };
+        crate::media_controls::update_playback(controls, is_playing, position);
+    }
+}
+
+/// Process a single IPC request and return a response.
+fn handle_ipc_request(
+    request: &crate::ipc::protocol::IpcRequest,
+    player: &mut Player,
+    playback_handle: &mut Option<std::thread::JoinHandle<Result<()>>>,
+    gapless_played_next: &mut Option<Arc<AtomicBool>>,
+    pre_decode_triggered: &mut bool,
+) -> crate::ipc::protocol::IpcResponse {
+    use crate::ipc::protocol::{IpcRequest, IpcResponse, PlayerStatus};
+
+    match request {
+        IpcRequest::Status => {
+            let state_str = match player.state() {
+                PlaybackState::Playing => "playing",
+                PlaybackState::Paused => "paused",
+                PlaybackState::Stopped => "stopped",
+            };
+            let (pos, total) = player.queue_position();
+            IpcResponse::with_status(PlayerStatus {
+                state: state_str.to_string(),
+                track: player.current_track().map(|t| t.display_name()),
+                position_secs: player.current_position().as_secs_f64(),
+                duration_secs: player.duration().as_secs_f64(),
+                volume_db: player.volume_db(),
+                queue_position: pos,
+                queue_total: total,
+            })
+        }
+        IpcRequest::Play if player.state() != PlaybackState::Playing => ipc_dispatch(
+            PlayerCommand::PlayPause,
+            player,
+            playback_handle,
+            gapless_played_next,
+            pre_decode_triggered,
+        ),
+        IpcRequest::Play => IpcResponse::ok(),
+        IpcRequest::Pause if player.state() == PlaybackState::Playing => ipc_dispatch(
+            PlayerCommand::PlayPause,
+            player,
+            playback_handle,
+            gapless_played_next,
+            pre_decode_triggered,
+        ),
+        IpcRequest::Pause => IpcResponse::ok(),
+        IpcRequest::Toggle => ipc_dispatch(
+            PlayerCommand::PlayPause,
+            player,
+            playback_handle,
+            gapless_played_next,
+            pre_decode_triggered,
+        ),
+        IpcRequest::Stop => ipc_dispatch(
+            PlayerCommand::Stop,
+            player,
+            playback_handle,
+            gapless_played_next,
+            pre_decode_triggered,
+        ),
+        IpcRequest::Next => ipc_dispatch(
+            PlayerCommand::NextTrack,
+            player,
+            playback_handle,
+            gapless_played_next,
+            pre_decode_triggered,
+        ),
+        IpcRequest::Prev => ipc_dispatch(
+            PlayerCommand::PrevTrack,
+            player,
+            playback_handle,
+            gapless_played_next,
+            pre_decode_triggered,
+        ),
+        IpcRequest::Volume { db } => ipc_dispatch(
+            PlayerCommand::SetVolume(*db),
+            player,
+            playback_handle,
+            gapless_played_next,
+            pre_decode_triggered,
+        ),
+    }
+}
+
+/// Execute a player command and convert the result to an IPC response.
+fn ipc_dispatch(
+    cmd: PlayerCommand,
+    player: &mut Player,
+    playback_handle: &mut Option<std::thread::JoinHandle<Result<()>>>,
+    gapless_played_next: &mut Option<Arc<AtomicBool>>,
+    pre_decode_triggered: &mut bool,
+) -> crate::ipc::protocol::IpcResponse {
+    use crate::ipc::protocol::IpcResponse;
+
+    let action = player.handle_command(cmd);
+    match handle_action(
+        action,
+        player,
+        playback_handle,
+        gapless_played_next,
+        pre_decode_triggered,
+    ) {
+        Ok(()) => IpcResponse::ok(),
+        Err(e) => IpcResponse::error(e.to_string()),
     }
 }
 

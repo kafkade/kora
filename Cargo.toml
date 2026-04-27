@@ -60,8 +60,17 @@ dirs = "6"
 # Ctrl+C handling
 ctrlc = "3"
 
+# OS media controls (MPRIS/SMTC/MediaRemote)
+souvlaki = { version = "0.7", optional = true }
+
 # RSS/Atom feed parsing (for podcasts)
 feed-rs = "2"
 
-[dev-dependencies]
+# JSON serialization (IPC protocol)
 serde_json = "1"
+
+[features]
+default = ["media-controls"]
+media-controls = ["souvlaki"]
+
+[dev-dependencies]

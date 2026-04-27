@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Downloaded episodes play from local files instead of streaming
 - Podcast chapter support: Podlove Simple Chapters (PSC) parsed from RSS feeds
 - Current chapter displayed in status bar (e.g., "Ch 2/5: Interview")
+- IPC remote control: control a running kora instance via Unix socket from another terminal
+- CLI subcommands: `kora play`, `kora pause`, `kora toggle`, `kora stop`, `kora next`, `kora prev`, `kora volume <DB>`, `kora status`
+- `kora status` returns JSON with current state, track, position, volume, and queue info
+- MPRIS / media key integration via souvlaki (Linux D-Bus, macOS MediaRemote, Windows SMTC)
+- Hardware media keys (play/pause/next/prev) control kora from keyboard or Bluetooth headphones
+- Now-playing metadata displayed in system media widgets (Control Center, playerctl, etc.)
 
 ### Changed
 

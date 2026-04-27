@@ -97,6 +97,8 @@ pub enum PlayerCommand {
     #[allow(dead_code)] // Available for CLI/IPC device listing
     ListDevices,
     SetDevice(String),
+    /// Set absolute volume in dB (for IPC remote control).
+    SetVolume(f32),
     /// Open the podcast browser view (handled in TUI layer).
     #[allow(dead_code)]
     OpenPodcasts,
@@ -642,6 +644,12 @@ impl Player {
             }
             PlayerCommand::SetDevice(name) => {
                 self.device_name = Some(name);
+                PlayerAction::None
+            }
+            PlayerCommand::SetVolume(db) => {
+                self.volume = Volume(db.clamp(-30.0, 6.0));
+                self.shared_volume
+                    .store(self.volume.as_linear().to_bits(), Ordering::Relaxed);
                 PlayerAction::None
             }
             PlayerCommand::OpenPodcasts | PlayerCommand::AddPodcastFeed(_) => {
