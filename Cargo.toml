@@ -29,6 +29,7 @@ crossterm = "0.29"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 
 # Config & serialization
 serde = { version = "1", features = ["derive"] }

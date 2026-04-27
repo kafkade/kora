@@ -87,6 +87,24 @@ cargo install --path .
 - **macOS**: No extra dependencies (CoreAudio)
 - **Windows**: No extra dependencies (WASAPI)
 
+## Shell Completions
+
+Generate completions for your shell:
+
+```sh
+# Bash
+kora completions bash > ~/.local/share/bash-completion/completions/kora
+
+# Zsh
+kora completions zsh > ~/.zfunc/_kora
+
+# Fish
+kora completions fish > ~/.config/fish/completions/kora.fish
+
+# PowerShell
+kora completions powershell > _kora.ps1
+```
+
 ## Status
 
 🚧 **Early development** — Phase 2 (Daily Driver). Local files, internet radio, and HTTP streams are working. See [ROADMAP.md](ROADMAP.md) for the full plan.
