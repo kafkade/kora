@@ -16,6 +16,7 @@ use crate::core::favorites::Favorites;
 use crate::core::session::Session;
 use crate::core::track::{Track, TrackSource};
 use crate::core::types::Volume;
+use crate::playback::chapters::{self, Chapter};
 use crate::playback::decoder;
 use crate::playback::eq::{self, EqPreset, Equalizer};
 use crate::playback::fft::SpectrumData;
@@ -102,6 +103,10 @@ pub enum PlayerCommand {
     /// Add a podcast feed by URL (handled in TUI layer).
     #[allow(dead_code)]
     AddPodcastFeed(String),
+    /// Jump to the next chapter in the current podcast episode.
+    NextChapter,
+    /// Jump to the previous chapter in the current podcast episode.
+    PrevChapter,
     Quit,
 }
 
@@ -180,6 +185,7 @@ pub struct Player {
     sleep_timer: Option<SleepTimer>,
     device_name: Option<String>,
     current_lyrics: Lyrics,
+    current_chapters: Vec<Chapter>,
 
     spectrum: Arc<SpectrumData>,
 
@@ -251,6 +257,7 @@ impl Player {
             sleep_timer: None,
             device_name,
             current_lyrics: Lyrics::default(),
+            current_chapters: Vec::new(),
             spectrum: Arc::new(SpectrumData::new(32)),
             stop_flag: Arc::new(AtomicBool::new(false)),
             pause_flag: Arc::new(AtomicBool::new(false)),
@@ -278,6 +285,7 @@ impl Player {
 
         // Load lyrics for the new track
         self.current_lyrics = lyrics::load_lyrics_for_track(track);
+        self.current_chapters.clear();
 
         let mut samples = decoded.samples;
 
@@ -335,6 +343,7 @@ impl Player {
         if let Some(track) = self.tracks.get(self.current_index) {
             self.current_lyrics = lyrics::load_lyrics_for_track(track);
         }
+        self.current_chapters.clear();
 
         let total_samples = pre.samples.len() as u64;
         self.current_duration = Duration::from_secs_f64(
@@ -639,6 +648,36 @@ impl Player {
                 // Handled in the TUI layer — no playback state change needed.
                 PlayerAction::None
             }
+            PlayerCommand::NextChapter => {
+                if self.current_chapters.is_empty() {
+                    return PlayerAction::None;
+                }
+                let position_ms = self.current_position().as_millis() as u64;
+                let cur = chapters::current_chapter_index(&self.current_chapters, position_ms);
+                let next = cur.map(|i| i + 1).unwrap_or(0);
+                if let Some(ch) = self.current_chapters.get(next) {
+                    self.pause_offset = Duration::from_millis(ch.start_ms);
+                    self.playback_start = Some(Instant::now());
+                }
+                PlayerAction::None
+            }
+            PlayerCommand::PrevChapter => {
+                if self.current_chapters.is_empty() {
+                    return PlayerAction::None;
+                }
+                let position_ms = self.current_position().as_millis() as u64;
+                let cur = chapters::current_chapter_index(&self.current_chapters, position_ms);
+                let target: usize = match cur {
+                    Some(idx) if position_ms > self.current_chapters[idx].start_ms + 3000 => idx,
+                    Some(idx) => idx.saturating_sub(1),
+                    None => 0,
+                };
+                if let Some(ch) = self.current_chapters.get(target) {
+                    self.pause_offset = Duration::from_millis(ch.start_ms);
+                    self.playback_start = Some(Instant::now());
+                }
+                PlayerAction::None
+            }
             PlayerCommand::Quit => PlayerAction::Quit,
         }
     }
@@ -671,6 +710,39 @@ impl Player {
     /// Get lyrics for the current track.
     pub fn lyrics(&self) -> &Lyrics {
         &self.current_lyrics
+    }
+
+    /// Get chapters for the current track.
+    pub fn chapters(&self) -> &[Chapter] {
+        &self.current_chapters
+    }
+
+    /// Set chapters for the current track (called when playing a podcast episode).
+    pub fn set_chapters(&mut self, chaps: Vec<Chapter>) {
+        self.current_chapters = chaps;
+    }
+
+    /// Get the current chapter based on playback position.
+    pub fn current_chapter(&self) -> Option<&Chapter> {
+        let position_ms = self.current_position().as_millis() as u64;
+        let idx = chapters::current_chapter_index(&self.current_chapters, position_ms)?;
+        self.current_chapters.get(idx)
+    }
+
+    /// Get the current chapter index and total chapter count.
+    pub fn current_chapter_position(&self) -> Option<(usize, usize)> {
+        if self.current_chapters.is_empty() {
+            return None;
+        }
+        let position_ms = self.current_position().as_millis() as u64;
+        let idx = chapters::current_chapter_index(&self.current_chapters, position_ms)?;
+        Some((idx + 1, self.current_chapters.len()))
+    }
+
+    /// Check if the current track has chapters loaded.
+    #[allow(dead_code)]
+    pub fn has_chapters(&self) -> bool {
+        !self.current_chapters.is_empty()
     }
 
     /// Check if the current track has lyrics loaded.

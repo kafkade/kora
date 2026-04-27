@@ -41,3 +41,15 @@
 # [[custom_eq_presets]]
 # name = "Late Night"
 # gains = [-4.0, -2.0, 0.0, 2.0, 4.0, 4.0, 2.0, 0.0, -2.0, -4.0]
+
+# ── Podcast Downloads ───────────────────────────────────────────────
+# Custom download directory for podcast episodes.
+# Default: system cache dir (e.g. ~/.cache/kora/podcasts on Linux)
+# podcast_download_dir = "/home/user/Podcasts"
+
+# Automatically delete downloaded episodes after they have been played.
+# podcast_auto_delete_played = false
+
+# Maximum storage for podcast downloads in MB. Oldest files are deleted
+# when the limit is exceeded. Omit or set to null for unlimited.
+# podcast_storage_limit_mb = 2048

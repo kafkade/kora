@@ -1,6 +1,9 @@
 //! Podcast browser overlay — browse subscribed feeds and their episodes.
 
+use std::path::PathBuf;
+
 use crate::core::track::Track;
+use crate::providers::download;
 use crate::providers::podcast::{
     PodcastEpisode, PodcastFeed, PodcastState, episode_to_track, fetch_feed, save_state,
 };
@@ -44,11 +47,19 @@ pub struct PodcastView {
     state: PodcastState,
     /// Whether feeds have been refreshed at least once since opening.
     refreshed: bool,
+    /// Download directory for podcast episodes.
+    download_dir: PathBuf,
 }
 
 impl PodcastView {
     /// Initialize from saved podcast state.
+    #[allow(dead_code)] // Convenience constructor; `with_download_dir` is used directly by app.rs
     pub fn new(state: &PodcastState) -> Self {
+        Self::with_download_dir(state, None)
+    }
+
+    /// Initialize from saved podcast state with a custom download directory.
+    pub fn with_download_dir(state: &PodcastState, custom_dir: Option<PathBuf>) -> Self {
         let feeds: Vec<PodcastFeedWithEpisodes> = state
             .feeds
             .iter()
@@ -58,6 +69,8 @@ impl PodcastView {
                 episode_count: 0,
             })
             .collect();
+
+        let dl_dir = custom_dir.unwrap_or_else(download::download_dir);
 
         Self {
             feeds,
@@ -71,6 +84,7 @@ impl PodcastView {
             visible_height: 20,
             state: state.clone(),
             refreshed: false,
+            download_dir: dl_dir,
         }
     }
 
@@ -175,6 +189,91 @@ impl PodcastView {
         }
     }
 
+    /// Download the currently selected episode.
+    pub fn download_selected_episode(&mut self) {
+        if self.mode != PodcastViewMode::EpisodeList {
+            return;
+        }
+        let feed_idx = self.selected_feed;
+        let ep_idx = self.selected_episode;
+        let (feed_title, audio_url, ep_title) = {
+            let Some(feed) = self.feeds.get(feed_idx) else {
+                return;
+            };
+            let Some(ep) = feed.episodes.get(ep_idx) else {
+                return;
+            };
+            (
+                feed.feed.title.clone(),
+                ep.audio_url.clone(),
+                ep.title.clone(),
+            )
+        };
+
+        self.status_message = Some(format!("Downloading: {ep_title}..."));
+
+        match download::download_episode(&audio_url, &feed_title, &ep_title, &self.download_dir) {
+            Ok(path) => {
+                let path_str = path.to_string_lossy().to_string();
+                if let Some(feed) = self.feeds.get_mut(feed_idx)
+                    && let Some(ep) = feed.episodes.get_mut(ep_idx)
+                {
+                    ep.downloaded_path = Some(path_str);
+                }
+                if let Err(e) = save_state(&self.state) {
+                    tracing::warn!("Failed to save podcast state: {e}");
+                }
+                self.status_message = Some(format!("Downloaded: {ep_title}"));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Download failed: {e}"));
+            }
+        }
+    }
+
+    /// Delete downloaded files for played episodes.
+    pub fn cleanup_played_episodes(&mut self) {
+        match download::cleanup_played(&self.state, &self.download_dir) {
+            Ok(count) => {
+                for feed in &mut self.feeds {
+                    for ep in &mut feed.episodes {
+                        if ep.played {
+                            ep.downloaded_path = None;
+                        }
+                    }
+                }
+                self.status_message = Some(format!("Cleaned up {count} played episode(s)"));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Cleanup failed: {e}"));
+            }
+        }
+    }
+
+    /// Check if an episode at given indices is downloaded (for rendering).
+    pub fn is_episode_downloaded(&self, feed_idx: usize, ep_idx: usize) -> bool {
+        let Some(feed) = self.feeds.get(feed_idx) else {
+            return false;
+        };
+        let Some(ep) = feed.episodes.get(ep_idx) else {
+            return false;
+        };
+        // Check downloaded_path first, then fall back to filesystem check
+        if let Some(ref path) = ep.downloaded_path {
+            let p = std::path::Path::new(path);
+            if p.exists() {
+                return true;
+            }
+        }
+        download::is_downloaded(
+            &ep.audio_url,
+            &self.download_dir,
+            &feed.feed.title,
+            &ep.title,
+        )
+        .is_some()
+    }
+
     /// Convert the selected episode to a playable Track.
     pub fn selected_episode_track(&self) -> Option<Track> {
         if self.mode != PodcastViewMode::EpisodeList {
@@ -183,6 +282,18 @@ impl PodcastView {
         let feed = self.feeds.get(self.selected_feed)?;
         let episode = feed.episodes.get(self.selected_episode)?;
         Some(episode_to_track(episode))
+    }
+
+    /// Get chapters for the currently selected episode (if any).
+    pub fn selected_episode_chapters(&self) -> Vec<crate::playback::chapters::Chapter> {
+        if self.mode != PodcastViewMode::EpisodeList {
+            return Vec::new();
+        }
+        self.feeds
+            .get(self.selected_feed)
+            .and_then(|f| f.episodes.get(self.selected_episode))
+            .map(|ep| ep.chapters.clone())
+            .unwrap_or_default()
     }
 
     /// Move selection up.
