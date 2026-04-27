@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Podcast subscription management in TUI: press `P` to open podcast view
 - Add podcast feeds by URL, remove subscriptions, refresh feeds from within the TUI
 - Podcast episode browser with played/unplayed indicators, duration, and publish dates
+- Podcast episode downloads: press `D` in podcast view to download, `C` to clean up played episodes
+- Configurable download directory, auto-delete played episodes, and storage limit in `config.toml`
+- Downloaded episodes play from local files instead of streaming
+- Podcast chapter support: Podlove Simple Chapters (PSC) parsed from RSS feeds
+- Current chapter displayed in status bar (e.g., "Ch 2/5: Interview")
 
 ### Changed
 

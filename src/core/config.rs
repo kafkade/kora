@@ -35,6 +35,15 @@ pub struct KoraConfig {
     /// Custom EQ presets (in addition to built-in ones).
     #[serde(default)]
     pub custom_eq_presets: Vec<CustomEqPreset>,
+    /// Custom podcast download directory (None = use default cache dir).
+    #[serde(default)]
+    pub podcast_download_dir: Option<PathBuf>,
+    /// Automatically delete downloaded episodes after they are played.
+    #[serde(default)]
+    pub podcast_auto_delete_played: bool,
+    /// Maximum storage for podcast downloads in MB (None = unlimited).
+    #[serde(default)]
+    pub podcast_storage_limit_mb: Option<u64>,
 }
 
 impl Default for KoraConfig {
@@ -49,6 +58,9 @@ impl Default for KoraConfig {
             replaygain: "track".to_string(),
             audio_device: None,
             custom_eq_presets: Vec::new(),
+            podcast_download_dir: None,
+            podcast_auto_delete_played: false,
+            podcast_storage_limit_mb: None,
         }
     }
 }
@@ -137,6 +149,9 @@ mod tests {
         assert_eq!(config.replaygain, "track");
         assert!(config.audio_device.is_none());
         assert!(config.custom_eq_presets.is_empty());
+        assert!(config.podcast_download_dir.is_none());
+        assert!(!config.podcast_auto_delete_played);
+        assert!(config.podcast_storage_limit_mb.is_none());
     }
 
     #[test]
@@ -154,6 +169,9 @@ mod tests {
                 name: "Test".to_string(),
                 gains: [1.0, 2.0, 3.0, 4.0, 5.0, -1.0, -2.0, -3.0, -4.0, -5.0],
             }],
+            podcast_download_dir: None,
+            podcast_auto_delete_played: false,
+            podcast_storage_limit_mb: None,
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();

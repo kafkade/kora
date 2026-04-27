@@ -325,6 +325,12 @@ fn run_loop(
                                     pv.refresh_all();
                                 }
                             }
+                            KeyCode::Char('D') if pv.mode() == PodcastViewMode::EpisodeList => {
+                                pv.download_selected_episode();
+                            }
+                            KeyCode::Char('C') if pv.mode() == PodcastViewMode::EpisodeList => {
+                                pv.cleanup_played_episodes();
+                            }
                             KeyCode::Char('q') => {
                                 if let Err(e) = player.save_session() {
                                     tracing::warn!("Failed to save session on quit: {e}");
@@ -340,6 +346,7 @@ fn run_loop(
                     && let Some(ref pv) = podcast_view
                     && let Some(track) = pv.selected_episode_track()
                 {
+                    let episode_chapters = pv.selected_episode_chapters();
                     let action = player.add_and_play(track);
                     handle_action(
                         action,
@@ -348,6 +355,7 @@ fn run_loop(
                         &mut gapless_played_next,
                         &mut pre_decode_triggered,
                     )?;
+                    player.set_chapters(episode_chapters);
                 }
 
                 if close_podcast {
@@ -456,7 +464,9 @@ fn run_loop(
                 }
                 KeyCode::Char('P') => {
                     let state = crate::providers::podcast::load_state().unwrap_or_default();
-                    let mut pv = PodcastView::new(&state);
+                    let config = crate::core::config::KoraConfig::load().ok();
+                    let dl_dir = config.and_then(|c| c.podcast_download_dir);
+                    let mut pv = PodcastView::with_download_dir(&state, dl_dir);
                     pv.ensure_refreshed();
                     podcast_view = Some(pv);
                     None
@@ -486,6 +496,8 @@ fn run_loop(
                     show_lyrics = !show_lyrics;
                     None
                 }
+                KeyCode::Char('.') => Some(PlayerCommand::NextChapter),
+                KeyCode::Char(',') => Some(PlayerCommand::PrevChapter),
                 _ => None,
             };
 
@@ -699,7 +711,29 @@ fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
             theme.track_title,
         ),
     ]);
-    frame.render_widget(Paragraph::new(track_line), chunks[0]);
+
+    let chapter_spans: Vec<Span> =
+        if let Some((ch_pos, ch_total)) = player.current_chapter_position() {
+            let ch_title = player
+                .current_chapter()
+                .map(|c| c.title.as_str())
+                .unwrap_or("—");
+            vec![
+                Span::styled("  ", theme.status_info),
+                Span::styled(
+                    format!("Ch {ch_pos}/{ch_total}: {ch_title}"),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]
+        } else {
+            vec![]
+        };
+
+    let mut full_track_line = track_line.spans;
+    full_track_line.extend(chapter_spans);
+    frame.render_widget(Paragraph::new(Line::from(full_track_line)), chunks[0]);
 
     // Progress bar
     let position = player.current_position();
@@ -760,11 +794,18 @@ fn draw_track_info(frame: &mut Frame, area: Rect, player: &Player, theme: &Theme
             String::new()
         };
 
+    let chapter_info = {
+        let pos_ms = player.current_position().as_millis() as u64;
+        crate::playback::chapters::format_chapter_display(player.chapters(), pos_ms)
+            .map(|s| format!("  {s}"))
+            .unwrap_or_default()
+    };
+
     let status = Line::from(vec![
         Span::styled(state_icon, state_style),
         Span::styled(
             format!(
-                "  Vol: {:+.0}dB{eq_info}{shuffle_info}{repeat_info}{speed_info}{rg_info_str}  Theme: {}",
+                "  Vol: {:+.0}dB{eq_info}{shuffle_info}{repeat_info}{speed_info}{rg_info_str}{chapter_info}  Theme: {}",
                 player.volume_db(),
                 theme.name
             ),
@@ -910,6 +951,8 @@ fn draw_status_bar(
         Span::styled(":Viz ", theme.help_text),
         Span::styled("y", theme.help_key),
         Span::styled(":Lyrics ", theme.help_text),
+        Span::styled(",/.", theme.help_key),
+        Span::styled(":Ch± ", theme.help_text),
         Span::styled("[/]", theme.help_key),
         Span::styled(":Speed ", theme.help_text),
         Span::styled("S", theme.help_key),
@@ -1376,6 +1419,12 @@ fn draw_podcast_view(frame: &mut Frame, area: Rect, pv: &PodcastView, theme: &Th
                             let is_selected = idx == pv.selected_episode_index();
                             let prefix = if is_selected { "▶ " } else { "  " };
                             let played_icon = if ep.played { "✓ " } else { "  " };
+                            let dl_icon = if pv.is_episode_downloaded(pv.selected_feed_index(), idx)
+                            {
+                                "[✓] "
+                            } else {
+                                ""
+                            };
                             let duration_str = ep
                                 .duration_secs
                                 .map(|s| {
@@ -1402,7 +1451,7 @@ fn draw_podcast_view(frame: &mut Frame, area: Rect, pv: &PodcastView, theme: &Th
                             };
                             ListItem::new(Line::from(Span::styled(
                                 format!(
-                                    "{prefix}{played_icon}{}{duration_str}{date_str}",
+                                    "{prefix}{played_icon}{dl_icon}{}{duration_str}{date_str}",
                                     ep.title
                                 ),
                                 style,
@@ -1459,6 +1508,10 @@ fn draw_podcast_view(frame: &mut Frame, area: Rect, pv: &PodcastView, theme: &Th
                 Span::styled(":Navigate ", theme.help_text),
                 Span::styled("Enter", theme.help_key),
                 Span::styled(":Play ", theme.help_text),
+                Span::styled("D", theme.help_key),
+                Span::styled(":Download ", theme.help_text),
+                Span::styled("C", theme.help_key),
+                Span::styled(":Cleanup ", theme.help_text),
                 Span::styled("R", theme.help_key),
                 Span::styled(":Refresh ", theme.help_text),
                 Span::styled("Bksp/Esc", theme.help_key),

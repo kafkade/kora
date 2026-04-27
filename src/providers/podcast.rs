@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::core::track::{Track, TrackMetadata};
+use crate::playback::chapters::Chapter;
 
 /// A subscribed podcast feed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,12 @@ pub struct PodcastEpisode {
     pub position_ms: u64,
     #[serde(default)]
     pub played: bool,
+    /// Local file path if the episode has been downloaded.
+    #[serde(default)]
+    pub downloaded_path: Option<String>,
+    /// Chapter markers parsed from the RSS feed.
+    #[serde(default)]
+    pub chapters: Vec<Chapter>,
 }
 
 /// Persisted podcast state (subscriptions + resume positions).
@@ -96,10 +103,15 @@ fn parse_feed_bytes(url: &str, bytes: &[u8]) -> Result<(PodcastFeed, Vec<Podcast
         description,
     };
 
+    // Pre-parse chapter data from raw XML for each <item>
+    let raw_xml = String::from_utf8_lossy(bytes);
+    let item_chapters = extract_all_item_chapters(&raw_xml);
+
     let episodes: Vec<PodcastEpisode> = feed
         .entries
         .iter()
-        .filter_map(|entry| {
+        .enumerate()
+        .filter_map(|(idx, entry)| {
             // Look for an audio enclosure (media type starts with "audio/")
             let enclosure = entry.media.iter().find_map(|media| {
                 media.content.iter().find_map(|content| {
@@ -139,6 +151,8 @@ fn parse_feed_bytes(url: &str, bytes: &[u8]) -> Result<(PodcastFeed, Vec<Podcast
 
             let published = entry.published.map(|dt| dt.to_rfc2822());
 
+            let chapters = item_chapters.get(idx).cloned().unwrap_or_default();
+
             Some(PodcastEpisode {
                 title: ep_title,
                 audio_url,
@@ -146,11 +160,39 @@ fn parse_feed_bytes(url: &str, bytes: &[u8]) -> Result<(PodcastFeed, Vec<Podcast
                 published,
                 position_ms: 0,
                 played: false,
+                downloaded_path: None,
+                chapters,
             })
         })
         .collect();
 
     Ok((podcast_feed, episodes))
+}
+
+/// Extract PSC chapters from each `<item>` in raw RSS XML.
+fn extract_all_item_chapters(xml: &str) -> Vec<Vec<Chapter>> {
+    use crate::playback::chapters::parse_psc_chapters;
+
+    let mut result = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start) = xml[search_from..].find("<item") {
+        let abs_start = search_from + start;
+        let item_rest = &xml[abs_start..];
+
+        let end = match item_rest.find("</item>") {
+            Some(pos) => pos + "</item>".len(),
+            None => break,
+        };
+
+        let item_xml = &item_rest[..end];
+        let chapters = parse_psc_chapters(item_xml);
+        result.push(chapters);
+
+        search_from = abs_start + end;
+    }
+
+    result
 }
 
 /// Load podcast state from the config directory. Returns default if missing.
@@ -194,8 +236,19 @@ pub fn save_state(state: &PodcastState) -> Result<()> {
 }
 
 /// Convert a `PodcastEpisode` into a playable `Track` with metadata.
+///
+/// If the episode has a `downloaded_path`, uses the local file instead of streaming.
 pub fn episode_to_track(episode: &PodcastEpisode) -> Track {
-    let mut track = Track::from_url(episode.audio_url.clone());
+    let mut track = if let Some(ref local_path) = episode.downloaded_path {
+        let path = std::path::PathBuf::from(local_path);
+        if path.exists() {
+            Track::from_file(path)
+        } else {
+            Track::from_url(episode.audio_url.clone())
+        }
+    } else {
+        Track::from_url(episode.audio_url.clone())
+    };
     track.metadata = Some(TrackMetadata {
         title: Some(episode.title.clone()),
         artist: None,
@@ -349,6 +402,8 @@ mod tests {
             published: Some("Mon, 01 Jan 2024 00:00:00 +0000".to_string()),
             position_ms: 15000,
             played: false,
+            downloaded_path: None,
+            chapters: vec![],
         };
 
         let track = episode_to_track(&episode);
@@ -369,6 +424,8 @@ mod tests {
             published: None,
             position_ms: 0,
             played: true,
+            downloaded_path: None,
+            chapters: vec![],
         };
 
         let track = episode_to_track(&episode);
@@ -472,5 +529,48 @@ mod tests {
         assert_eq!(feeds.len(), 2);
         assert_eq!(feeds[0].title, "A");
         assert_eq!(feeds[1].title, "B");
+    }
+
+    #[test]
+    fn parse_rss_with_psc_chapters() {
+        let rss = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:psc="http://podlove.org/simple-chapters">
+  <channel>
+    <title>Chaptered Podcast</title>
+    <item>
+      <title>Episode With Chapters</title>
+      <enclosure url="https://example.com/ep1.mp3" type="audio/mpeg" length="1234567"/>
+      <psc:chapters>
+        <psc:chapter start="00:00:00" title="Intro"/>
+        <psc:chapter start="00:05:30" title="Main Topic" href="https://example.com/topic"/>
+        <psc:chapter start="00:45:00" title="Conclusion"/>
+      </psc:chapters>
+    </item>
+  </channel>
+</rss>"#;
+
+        let (feed, episodes) =
+            parse_feed_bytes("https://example.com/feed.rss", rss.as_bytes()).unwrap();
+        assert_eq!(feed.title, "Chaptered Podcast");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].chapters.len(), 3);
+        assert_eq!(episodes[0].chapters[0].title, "Intro");
+        assert_eq!(episodes[0].chapters[0].start_ms, 0);
+        assert_eq!(episodes[0].chapters[1].title, "Main Topic");
+        assert_eq!(episodes[0].chapters[1].start_ms, 330_000);
+        assert_eq!(
+            episodes[0].chapters[1].url,
+            Some("https://example.com/topic".to_string())
+        );
+        assert_eq!(episodes[0].chapters[2].title, "Conclusion");
+        assert_eq!(episodes[0].chapters[2].start_ms, 2_700_000);
+    }
+
+    #[test]
+    fn parse_rss_without_chapters_has_empty_vec() {
+        let (_, episodes) =
+            parse_feed_bytes("https://example.com/feed.rss", SAMPLE_RSS.as_bytes()).unwrap();
+        assert_eq!(episodes.len(), 1);
+        assert!(episodes[0].chapters.is_empty());
     }
 }
