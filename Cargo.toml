@@ -62,7 +62,7 @@ dirs = "6"
 ctrlc = "3"
 
 # OS media controls (MPRIS/SMTC/MediaRemote)
-souvlaki = { version = "0.7", optional = true }
+souvlaki = { version = "0.8", optional = true }
 
 # RSS/Atom feed parsing (for podcasts)
 feed-rs = "2"
