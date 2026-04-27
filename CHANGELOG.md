@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MPRIS / media key integration via souvlaki (Linux D-Bus, macOS MediaRemote, Windows SMTC)
 - Hardware media keys (play/pause/next/prev) control kora from keyboard or Bluetooth headphones
 - Now-playing metadata displayed in system media widgets (Control Center, playerctl, etc.)
+- Shell completions: `kora completions bash|zsh|fish|powershell` generates shell-specific completions
+- Headless/daemon mode: `kora --daemon` runs without TUI, controlled entirely via IPC subcommands
 
 ### Changed
 

@@ -10,6 +10,7 @@
 
 mod backend;
 mod core;
+mod daemon;
 mod ipc;
 #[cfg(feature = "media-controls")]
 mod media_controls;
@@ -20,19 +21,19 @@ mod tui;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::core::track::Track;
 use crate::playback::stream_decoder;
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(
     name = "kora",
     version,
     about = "A fast, multi-source terminal audio player",
     args_conflicts_with_subcommands = true
 )]
-struct Cli {
+pub(crate) struct Cli {
     /// Remote control subcommand
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -88,9 +89,13 @@ struct Cli {
     /// Select audio output device by name (case-insensitive substring match)
     #[arg(long, value_name = "NAME")]
     device: Option<String>,
+
+    /// Run in daemon mode (no TUI, controlled via IPC)
+    #[arg(long)]
+    daemon: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum CliCommand {
     /// Send play command to running kora instance
     Play,
@@ -115,6 +120,11 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
 }
 
 fn main() -> Result<()> {
@@ -126,6 +136,12 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Handle completions subcommand (not an IPC command)
+    if let Some(CliCommand::Completions { shell }) = cli.command {
+        clap_complete::generate(shell, &mut Cli::command(), "kora", &mut std::io::stdout());
+        return Ok(());
+    }
 
     // Handle IPC subcommands (thin client mode)
     if let Some(cmd) = cli.command {
@@ -299,10 +315,16 @@ fn main() -> Result<()> {
 
     tracing::info!("Playing {} track(s)", tracks.len());
 
-    // Launch TUI player
     let player =
         playback::player::Player::new(tracks, volume, eq_preset.as_deref(), rg_mode, device_name)?;
-    tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
+
+    if cli.daemon {
+        // Daemon mode: headless, IPC-controlled
+        daemon::run_daemon(player)?;
+    } else {
+        // TUI mode (default)
+        tui::app::run_with_theme(player, cli.no_restore, theme_name.as_deref())?;
+    }
 
     Ok(())
 }
@@ -322,6 +344,7 @@ fn handle_ipc_command(cmd: CliCommand) -> Result<()> {
         CliCommand::Prev => IpcRequest::Prev,
         CliCommand::Volume { db } => IpcRequest::Volume { db },
         CliCommand::Status { .. } => IpcRequest::Status,
+        CliCommand::Completions { .. } => unreachable!("handled before IPC dispatch"),
     };
 
     let response = send_command(&request)?;
@@ -340,4 +363,66 @@ fn handle_ipc_command(cmd: CliCommand) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn verify_cli() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn completions_bash() {
+        let mut buf = Vec::new();
+        clap_complete::generate(
+            clap_complete::Shell::Bash,
+            &mut Cli::command(),
+            "kora",
+            &mut buf,
+        );
+        assert!(!buf.is_empty(), "bash completions should not be empty");
+    }
+
+    #[test]
+    fn completions_zsh() {
+        let mut buf = Vec::new();
+        clap_complete::generate(
+            clap_complete::Shell::Zsh,
+            &mut Cli::command(),
+            "kora",
+            &mut buf,
+        );
+        assert!(!buf.is_empty(), "zsh completions should not be empty");
+    }
+
+    #[test]
+    fn completions_fish() {
+        let mut buf = Vec::new();
+        clap_complete::generate(
+            clap_complete::Shell::Fish,
+            &mut Cli::command(),
+            "kora",
+            &mut buf,
+        );
+        assert!(!buf.is_empty(), "fish completions should not be empty");
+    }
+
+    #[test]
+    fn completions_powershell() {
+        let mut buf = Vec::new();
+        clap_complete::generate(
+            clap_complete::Shell::PowerShell,
+            &mut Cli::command(),
+            "kora",
+            &mut buf,
+        );
+        assert!(
+            !buf.is_empty(),
+            "powershell completions should not be empty"
+        );
+    }
 }
