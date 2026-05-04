@@ -39,7 +39,7 @@ toml = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time"] }
 
 # HTTP client (for radio, podcasts)
-reqwest = { version = "0.13", default-features = false, features = ["stream", "blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["stream", "blocking", "json", "rustls"] }
 
 # Metadata / tags
 lofty = "0.24"
