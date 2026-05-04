@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-kora is a fast, multi-source terminal audio player built in Rust. It plays local audio files, internet radio stations, and podcasts from the terminal — with an equalizer, visualizer, themes, and more planned. The project is in active development (Phase 2 — Daily Driver).
+kora is a fast, multi-source terminal audio player built in Rust. It plays local audio files, internet radio stations, and podcasts from the terminal — with an equalizer, visualizer, themes, lyrics, gapless playback, IPC remote control, and media key integration. The project has completed Phases 0–5 and is approaching the 1.0 release (Phase 6).
 
 ## Non-Negotiable Constraints
 
@@ -20,12 +20,14 @@ Single Rust crate with clear module boundaries (split into workspace when needed
 
 ```
 src/
-├── core/       — Domain models, config, session, provider traits (no audio deps)
-├── playback/   — Decode (symphonia), DSP (EQ, biquad filters), player controller
+├── core/       — Domain models, config, session, favorites (no audio deps)
+├── playback/   — Decode (symphonia), DSP (EQ, FFT, ReplayGain, speed), lyrics, chapters, player controller
 ├── backend/    — Audio output adapters (CPAL for native)
-├── providers/  — Audio source implementations (local, radio, podcast)
-├── tui/        — Terminal UI (ratatui + crossterm), theme
-└── ipc/        — Remote control protocol (Unix socket / named pipe)
+├── providers/  — Audio source implementations (local, radio, podcast, OPML, downloads)
+├── tui/        — Terminal UI (ratatui + crossterm), themes, file browser, podcast view
+├── ipc/        — Remote control protocol (Unix socket, JSON)
+├── daemon.rs   — Headless/daemon mode event loop
+└── media_controls.rs — MPRIS / media key integration (souvlaki)
 ```
 
 ### Audio Pipeline
@@ -53,15 +55,17 @@ These rules apply to any code that runs on the CPAL audio callback thread:
 
 | Component | Crate | Notes |
 |-----------|-------|-------|
-| Decoding | `symphonia` | Pure Rust, MP3/FLAC/OGG/WAV/Opus |
+| Decoding | `symphonia` | Pure Rust, MP3/FLAC/OGG/WAV/Opus/AAC/ALAC |
 | Audio output | `cpal` | Cross-platform (ALSA, CoreAudio, WASAPI) |
 | Ring buffer | `rtrb` | Lock-free SPSC for real-time audio |
+| FFT | `rustfft` | Spectrum visualizer |
 | TUI | `ratatui` + `crossterm` | Terminal rendering |
-| CLI | `clap` v4 (derive) | Argument parsing |
+| CLI | `clap` v4 (derive) + `clap_complete` | Argument parsing + shell completions |
 | Config | `serde` + `toml` | Human-readable config |
-| Async | `tokio` | Network I/O, IPC |
-| HTTP | `reqwest` | Radio streams, podcast feeds |
-| Tags | `lofty` | ID3, Vorbis, MP4 metadata |
+| HTTP | `reqwest` (rustls) | Radio streams, podcast feeds, downloads |
+| RSS | `feed-rs` | Podcast feed parsing |
+| Tags | `lofty` | ID3, Vorbis, MP4 metadata + ReplayGain |
+| Media keys | `souvlaki` (optional) | MPRIS, MediaRemote, SMTC |
 | Logging | `tracing` | Structured, async-aware |
 | Errors | `thiserror` + `anyhow` | Library vs binary error handling |
 

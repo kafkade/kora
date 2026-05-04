@@ -96,34 +96,54 @@ cargo test -- --nocapture
 ```
 kora/
 ├── src/
-│   ├── main.rs              # Entry point, CLI parsing
-│   ├── core/                # Domain models, traits, config (no audio deps)
-│   │   ├── config.rs        # KoraConfig, config.toml loading
-│   │   ├── session.rs       # Session persistence (save/restore state)
-│   │   ├── track.rs         # Track, TrackMetadata, TrackSource types
-│   │   └── types.rs         # Volume, shared types
-│   ├── playback/            # Decode, DSP, state machine
-│   │   ├── decoder.rs       # symphonia file decode pipeline
-│   │   ├── stream_decoder.rs # HTTP stream decode (non-seekable sources)
-│   │   ├── dsp.rs           # Biquad IIR filters (Transposed Direct Form II)
-│   │   ├── eq.rs            # 10-band graphic equalizer with presets
-│   │   ├── engine.rs        # Sequential playback (non-TUI mode)
-│   │   └── player.rs        # Player controller (TUI ↔ audio bridge)
-│   ├── backend/             # Audio output adapters
-│   │   └── cpal_backend.rs  # CPAL output via rtrb ring buffer
-│   ├── providers/           # Audio source implementations
-│   │   ├── local.rs         # Local file resolver
-│   │   ├── radio.rs         # Radio Browser API client
-│   │   └── stations.rs      # Custom stations from stations.toml
-│   └── tui/                 # Terminal UI
-│       ├── app.rs           # TUI event loop, rendering, input
-│       └── theme.rs         # Nord color theme
+│   ├── main.rs                # Entry point, CLI parsing, subcommands
+│   ├── daemon.rs              # Headless/daemon mode event loop
+│   ├── media_controls.rs      # MPRIS / media key integration (souvlaki)
+│   ├── core/                  # Domain models, traits, config (no audio deps)
+│   │   ├── config.rs          # KoraConfig, config.toml loading, validation
+│   │   ├── favorites.rs       # Favorites persistence (favorites.toml)
+│   │   ├── session.rs         # Session persistence (save/restore state)
+│   │   ├── track.rs           # Track, TrackMetadata, TrackSource types
+│   │   └── types.rs           # Volume, shared types
+│   ├── playback/              # Decode, DSP, state machine
+│   │   ├── chapters.rs        # Podcast chapter parsing (PSC format)
+│   │   ├── decoder.rs         # symphonia file decode pipeline
+│   │   ├── stream_decoder.rs  # HTTP stream decode (non-seekable sources)
+│   │   ├── dsp.rs             # Biquad IIR filters (Transposed Direct Form II)
+│   │   ├── eq.rs              # 10-band graphic equalizer with presets
+│   │   ├── fft.rs             # FFT spectrum analysis for visualizer
+│   │   ├── lyrics.rs          # LRC parser and synced lyrics display
+│   │   ├── replaygain.rs      # ReplayGain tag reading and normalization
+│   │   ├── speed.rs           # Playback speed via resampling
+│   │   ├── engine.rs          # Sequential playback (non-TUI/daemon mode)
+│   │   └── player.rs          # Player controller (TUI/daemon ↔ audio bridge)
+│   ├── backend/               # Audio output adapters
+│   │   └── cpal_backend.rs    # CPAL output via rtrb ring buffer
+│   ├── providers/             # Audio source implementations
+│   │   ├── local.rs           # Local file resolver
+│   │   ├── radio.rs           # Radio Browser API client
+│   │   ├── stations.rs        # Custom stations from stations.toml
+│   │   ├── podcast.rs         # Podcast RSS provider
+│   │   ├── opml.rs            # OPML import/export
+│   │   └── download.rs        # Podcast episode download manager
+│   ├── tui/                   # Terminal UI
+│   │   ├── app.rs             # TUI event loop, rendering, input
+│   │   ├── theme.rs           # 10 color themes with hot-swap
+│   │   ├── file_browser.rs    # In-player file browser overlay
+│   │   └── podcast_view.rs    # Podcast subscription manager overlay
+│   └── ipc/                   # Remote control protocol
+│       ├── protocol.rs        # JSON request/response types
+│       ├── server.rs          # Unix socket server (background thread)
+│       └── client.rs          # Thin client for CLI subcommands
+├── scripts/
+│   └── release.ps1            # Release automation script
 ├── docs/
-│   └── adr/                 # Architecture Decision Records
-├── config.toml.example      # Example user configuration
-├── stations.toml.example    # Example custom radio stations
-├── ROADMAP.md               # Full product roadmap
-└── CHANGELOG.md             # Keep a Changelog format
+│   └── adr/                   # Architecture Decision Records
+├── config.toml.example        # Example user configuration
+├── stations.toml.example      # Example custom radio stations
+├── Cross.toml                 # Cross-compilation config (ALSA for aarch64)
+├── ROADMAP.md                 # Full product roadmap
+└── CHANGELOG.md               # Keep a Changelog format
 ```
 
 ### Key Architecture Decisions
