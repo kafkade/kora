@@ -3,12 +3,11 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 /// Decoded audio data ready for the audio pipeline.
 #[derive(Debug)]
@@ -34,12 +33,12 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
         hint.with_extension(ext);
     }
 
-    let probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .with_context(|| {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -54,27 +53,29 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
             }
         })?;
 
-    let mut format = probed.format;
-
     let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .first_track_known_codec(TrackType::Audio)
         .with_context(|| format!("No supported audio track in {}", path.display()))?;
 
-    let codec_params = track.codec_params.clone();
+    let audio_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .cloned()
+        .with_context(|| format!("No audio codec parameters in {}", path.display()))?;
     let track_id = track.id;
 
-    let sample_rate = codec_params
+    let sample_rate = audio_params
         .sample_rate
         .with_context(|| format!("Unknown sample rate in {}", path.display()))?;
-    let channels = codec_params
+    let channels = audio_params
         .channels
+        .as_ref()
         .map(|c| c.count())
         .with_context(|| format!("Unknown channel count in {}", path.display()))?;
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
+        .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
         .with_context(|| format!("Failed to create decoder for {}", path.display()))?;
 
     let mut all_samples: Vec<f32> = Vec::new();
@@ -83,12 +84,8 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
 
     loop {
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(symphonia::core::errors::Error::IoError(e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break; // End of stream
-            }
+            Ok(Some(packet)) => packet,
+            Ok(None) => break, // End of stream
             Err(symphonia::core::errors::Error::DecodeError(msg)) => {
                 // Corrupt packet — skip it, don't crash
                 decode_errors += 1;
@@ -105,17 +102,17 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
             Err(e) => return Err(e).context(format!("Read error in {}", path.display())),
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                let spec = *decoded.spec();
-                let duration = decoded.capacity();
-                let mut sample_buf = SampleBuffer::<f32>::new(duration as u64, spec);
-                sample_buf.copy_interleaved_ref(decoded);
-                all_samples.extend_from_slice(sample_buf.samples());
+                let frames = decoded.frames();
+                let n_channels = decoded.spec().channels().count();
+                let prev_len = all_samples.len();
+                all_samples.resize(prev_len + frames * n_channels, 0.0);
+                decoded.copy_to_slice_interleaved::<f32, _>(&mut all_samples[prev_len..]);
             }
             Err(symphonia::core::errors::Error::DecodeError(msg)) => {
                 // Corrupt frame — skip it, continue decoding

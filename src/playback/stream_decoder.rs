@@ -3,12 +3,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 use super::decoder::DecodedAudio;
 
@@ -93,36 +92,38 @@ pub fn decode_url(url: &str) -> Result<DecodedAudio> {
     };
     let mss = MediaSourceStream::new(Box::new(source), Default::default());
 
-    let probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .with_context(|| format!("Failed to detect audio format from URL: {url}"))?;
 
-    let mut format = probed.format;
-
     let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .first_track_known_codec(TrackType::Audio)
         .with_context(|| format!("No supported audio track in URL: {url}"))?;
 
-    let codec_params = track.codec_params.clone();
+    let audio_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .cloned()
+        .with_context(|| format!("No audio codec parameters in URL: {url}"))?;
     let track_id = track.id;
 
-    let sample_rate = codec_params
+    let sample_rate = audio_params
         .sample_rate
         .with_context(|| format!("Unknown sample rate in URL: {url}"))?;
-    let channels = codec_params
+    let channels = audio_params
         .channels
+        .as_ref()
         .map(|c| c.count())
         .with_context(|| format!("Unknown channel count in URL: {url}"))?;
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
+        .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
         .with_context(|| format!("Failed to create decoder for URL: {url}"))?;
 
     let mut all_samples: Vec<f32> = Vec::new();
@@ -131,12 +132,8 @@ pub fn decode_url(url: &str) -> Result<DecodedAudio> {
 
     loop {
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(symphonia::core::errors::Error::IoError(e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
             Err(symphonia::core::errors::Error::DecodeError(msg)) => {
                 decode_errors += 1;
                 tracing::warn!("Skipping corrupt packet from {url}: {msg}");
@@ -145,17 +142,17 @@ pub fn decode_url(url: &str) -> Result<DecodedAudio> {
             Err(e) => return Err(e).context(format!("Read error streaming from {url}")),
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                let spec = *decoded.spec();
-                let duration = decoded.capacity();
-                let mut sample_buf = SampleBuffer::<f32>::new(duration as u64, spec);
-                sample_buf.copy_interleaved_ref(decoded);
-                all_samples.extend_from_slice(sample_buf.samples());
+                let frames = decoded.frames();
+                let n_channels = decoded.spec().channels().count();
+                let prev_len = all_samples.len();
+                all_samples.resize(prev_len + frames * n_channels, 0.0);
+                decoded.copy_to_slice_interleaved::<f32, _>(&mut all_samples[prev_len..]);
             }
             Err(symphonia::core::errors::Error::DecodeError(msg)) => {
                 decode_errors += 1;
