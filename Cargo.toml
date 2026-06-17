@@ -18,7 +18,7 @@ path = "src/main.rs"
 symphonia = { version = "0.6", features = ["mp3", "flac", "ogg", "vorbis", "wav", "pcm", "isomp4", "aac", "alac"] }
 
 # Audio output (cross-platform)
-cpal = "0.17"
+cpal = "0.18"
 
 # Lock-free ring buffer for real-time audio
 rtrb = "0.3"

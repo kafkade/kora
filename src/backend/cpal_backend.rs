@@ -121,7 +121,7 @@ pub fn play_audio(
     // and owned exclusively by it — no unsafe needed.
     let stream = device
         .build_output_stream(
-            &config,
+            config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 // REAL-TIME SAFE: only pop from lock-free ring buffer
                 for sample in data.iter_mut() {
@@ -215,7 +215,7 @@ pub fn play_audio_with_position(
 
     let stream = device
         .build_output_stream(
-            &config,
+            config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 for sample in data.iter_mut() {
                     match consumer.pop() {
@@ -323,7 +323,7 @@ pub fn play_audio_gapless(
 
     let stream = device
         .build_output_stream(
-            &config,
+            config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 for sample in data.iter_mut() {
                     match consumer.pop() {
