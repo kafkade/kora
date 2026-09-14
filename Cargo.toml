@@ -21,7 +21,7 @@ symphonia = { version = "0.6", features = ["mp3", "flac", "ogg", "vorbis", "wav"
 cpal = "0.18"
 
 # Lock-free ring buffer for real-time audio
-rtrb = "0.3"
+rtrb = "0.4"
 
 # TUI
 ratatui = "0.30"
@@ -42,7 +42,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "
 reqwest = { version = "0.13", default-features = false, features = ["stream", "blocking", "json", "rustls"] }
 
 # Metadata / tags
-lofty = "0.24"
+lofty = "0.25"
 
 # Logging
 tracing = "0.1"
@@ -56,7 +56,7 @@ thiserror = "2"
 anyhow = "1"
 
 # Directory paths (XDG, etc.)
-dirs = "6"
+dirs = "7"
 
 # Ctrl+C handling
 ctrlc = "3"
